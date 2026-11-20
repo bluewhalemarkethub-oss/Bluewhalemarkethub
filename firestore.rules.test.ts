@@ -1,0 +1,111 @@
+/**
+ * Phase 0 / Phase 5 Security Rules Verification Matrix
+ * Verifies the "Dirty Dozen" adversarial payloads against BlueWhale Markethub firestore.rules.
+ */
+export const dirtyDozenPayloads = [
+  {
+    name: '1. Unauthenticated deposit create',
+    auth: null,
+    path: 'deposits/dep_001',
+    payload: { id: 'dep_001', userId: 'u1', amount: 250, status: 'Pending' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '2. Unverified email admin spoof',
+    auth: { uid: 'attacker', token: { email: 'johnblessing9977@gmail.com', email_verified: false } },
+    path: 'deposits/dep_001',
+    operation: 'list',
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '3. Self-assigned admin role on signup',
+    auth: { uid: 'u1', token: { email: 'user@example.com', email_verified: true } },
+    path: 'users/u1',
+    payload: { uid: 'u1', role: 'admin', status: 'active', walletBalance: 0 },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '4. Shadow field injection on deposit',
+    auth: { uid: 'u1', token: { email: 'user@example.com', email_verified: true } },
+    path: 'deposits/dep_002',
+    payload: { id: 'dep_002', userId: 'u1', amount: 150, status: 'Pending', autoApprove: true },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '5. Deposit below $100 minimum',
+    auth: { uid: 'u1', token: { email: 'user@example.com', email_verified: true } },
+    path: 'deposits/dep_003',
+    payload: { id: 'dep_003', userId: 'u1', amount: 99, status: 'Pending' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '6. Deposit status shortcutting to Approved',
+    auth: { uid: 'u1', token: { email: 'user@example.com', email_verified: true } },
+    path: 'deposits/dep_004',
+    payload: { id: 'dep_004', userId: 'u1', amount: 500, status: 'Approved' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '7. Terminal deposit tampering after approval',
+    auth: { uid: 'admin1', token: { email: 'johnblessing9977@gmail.com', email_verified: true } },
+    path: 'deposits/dep_approved',
+    payload: { status: 'Rejected' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '8. Wallet balance self-inflation by customer',
+    auth: { uid: 'u1', token: { email: 'user@example.com', email_verified: true } },
+    path: 'users/u1',
+    payload: { walletBalance: 50000, totalPurchases: 10 },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '9. ID poisoning with oversized or invalid characters',
+    auth: { uid: 'u1', token: { email: 'user@example.com', email_verified: true } },
+    path: 'orders/' + 'x'.repeat(250),
+    payload: { id: 'x'.repeat(250), userId: 'u1', price: 20 },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '10. Cross-user PII read attempt',
+    auth: { uid: 'u2', token: { email: 'other@example.com', email_verified: true } },
+    path: 'users/u1/private/info',
+    operation: 'get',
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '11. Blanket collection list scraping without owner filter',
+    auth: { uid: 'u2', token: { email: 'other@example.com', email_verified: true } },
+    path: 'orders',
+    operation: 'list',
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '12. Client timestamp forgery on order create',
+    auth: { uid: 'u1', token: { email: 'user@example.com', email_verified: true } },
+    path: 'orders/ord_001',
+    payload: { id: 'ord_001', userId: 'u1', createdAt: '2020-01-01T00:00:00Z' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '13. Non-admin writes servicePricing override',
+    auth: { uid: 'u1', token: { email: 'user@example.com', email_verified: true } },
+    path: 'servicePricing/ups-verified-account',
+    payload: {
+      serviceId: 'ups-verified-account',
+      personalPrice: 100,
+      businessPrice: 100,
+      corporatePrice: 100,
+      isPublic: true,
+      updatedBy: 'u1',
+    },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '14. Price alert triggered above threshold',
+    auth: { uid: 'u1', token: { email: 'user@example.com', email_verified: true } },
+    path: 'priceAlerts/pa_001',
+    payload: { status: 'Triggered', triggeredPrice: 150 },
+    expected: 'PERMISSION_DENIED',
+  },
+];

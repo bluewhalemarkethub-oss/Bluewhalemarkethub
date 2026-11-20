@@ -1,0 +1,756 @@
+{
+  "entities": {
+    "UserAccount": {
+      "title": "UserAccount",
+      "description": "Account profile, referral code, loyalty points, and wallet ledger summary for a BlueWhale Markethub member.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "pattern": "^[a-zA-Z0-9_\\-.]+$"
+        },
+        "country": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "role": {
+          "type": "string",
+          "enum": ["customer", "admin"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "suspended"]
+        },
+        "isVerified": {
+          "type": "boolean"
+        },
+        "walletBalance": {
+          "type": "number"
+        },
+        "totalDeposits": {
+          "type": "number"
+        },
+        "totalPurchases": {
+          "type": "number"
+        },
+        "twoFactorEnabled": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "fullName",
+        "username",
+        "country",
+        "role",
+        "status",
+        "isVerified",
+        "walletBalance",
+        "totalDeposits",
+        "totalPurchases",
+        "twoFactorEnabled",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII document for user email, phone number, and security metadata.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "phoneNumber": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 32
+        },
+        "lastLoginIp": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "phoneNumber", "updatedAt"]
+    },
+    "Deposit": {
+      "title": "Deposit",
+      "description": "Cryptocurrency wallet deposit submission tracked for admin verification.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userEmail": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "amount": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["BTC", "ETH", "USDT_ERC20", "USDT_TRC20"]
+        },
+        "walletAddress": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 128
+        },
+        "txHash": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 160
+        },
+        "receiptDataUrl": {
+          "type": "string",
+          "minLength": 30,
+          "maxLength": 450000
+        },
+        "receiptFileName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Pending", "Approved", "Rejected"]
+        },
+        "adminNote": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "userEmail",
+        "username",
+        "amount",
+        "currency",
+        "walletAddress",
+        "txHash",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ShippingOrder": {
+      "title": "AccountOrder",
+      "description": "Verified account purchase order placed by a customer for Personal, Business, or Corporate tier in a target country.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userEmail": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "providerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "providerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "serviceName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "accountType": {
+          "type": "string",
+          "enum": ["Personal", "Business", "Corporate"]
+        },
+        "country": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "price": {
+          "type": "number"
+        },
+        "trackingCode": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Pending", "Processing", "Completed", "Cancelled", "Refunded"]
+        },
+        "recipientName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "destinationCity": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "userEmail",
+        "username",
+        "providerId",
+        "providerName",
+        "serviceName",
+        "country",
+        "price",
+        "trackingCode",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WalletTransaction": {
+      "title": "WalletTransaction",
+      "description": "Ledger entry for deposits, service purchases, and refunds.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["deposit", "purchase", "refund"]
+        },
+        "amount": {
+          "type": "number"
+        },
+        "direction": {
+          "type": "string",
+          "enum": ["credit", "debit"]
+        },
+        "referenceId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Pending", "Completed", "Rejected", "Refunded"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "type",
+        "amount",
+        "direction",
+        "referenceId",
+        "description",
+        "status",
+        "createdAt"
+      ]
+    },
+    "EmailNotification": {
+      "title": "EmailNotification",
+      "description": "Dispatched email notification record for registration, deposit approval, purchases, and security resets.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "recipientEmail": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "subject": {
+          "type": "string",
+          "enum": [
+            "Welcome to BlueWhale Markethub",
+            "Deposit Successfully Added",
+            "Service Purchase Completed",
+            "Reset Your Password",
+            "Price Drop Alert Triggered"
+          ]
+        },
+        "body": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "category": {
+          "type": "string",
+          "enum": ["registration", "deposit", "purchase", "security", "price_alert"]
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "recipientEmail",
+        "subject",
+        "body",
+        "category",
+        "read",
+        "createdAt"
+      ]
+    },
+    "LoginActivity": {
+      "title": "LoginActivity",
+      "description": "Security session and IP tracking audit log.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ipAddress": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "userAgent": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "deviceLabel": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "authMethod": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "ipAddress",
+        "userAgent",
+        "deviceLabel",
+        "authMethod",
+        "createdAt"
+      ]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Customer support ticket or live chat thread.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userEmail": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 160
+        },
+        "category": {
+          "type": "string",
+          "enum": ["Account Provisioning", "Carrier Onboarding", "Crypto Deposit", "Order Support", "Live Chat", "Technical"]
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["Normal", "High", "Urgent"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Open", "Replied", "Resolved", "Closed"]
+        },
+        "lastMessage": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "userEmail",
+        "username",
+        "subject",
+        "category",
+        "priority",
+        "status",
+        "lastMessage",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "SupportMessage": {
+      "title": "SupportMessage",
+      "description": "Individual message inside a support ticket or live chat thread.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ticketId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "ticketOwnerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "senderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "senderRole": {
+          "type": "string",
+          "enum": ["customer", "admin"]
+        },
+        "senderName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ticketId",
+        "ticketOwnerId",
+        "senderId",
+        "senderRole",
+        "senderName",
+        "body",
+        "createdAt"
+      ]
+    },
+    "ServicePriceOverride": {
+      "title": "ServicePriceOverride",
+      "description": "Live catalog base tier prices managed by administrators for account packages.",
+      "type": "object",
+      "properties": {
+        "serviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "personalPrice": {
+          "type": "number"
+        },
+        "businessPrice": {
+          "type": "number"
+        },
+        "corporatePrice": {
+          "type": "number"
+        },
+        "isPublic": {
+          "type": "boolean"
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "serviceId",
+        "personalPrice",
+        "businessPrice",
+        "corporatePrice",
+        "isPublic",
+        "updatedBy",
+        "updatedAt"
+      ]
+    },
+    "PriceAlert": {
+      "title": "PriceAlert",
+      "description": "Target price threshold watch created by a user for a specific service, account tier, and country.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userEmail": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "serviceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "providerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "serviceName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "accountType": {
+          "type": "string",
+          "enum": ["Personal", "Business", "Corporate"]
+        },
+        "country": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "targetPrice": {
+          "type": "number"
+        },
+        "initialPrice": {
+          "type": "number"
+        },
+        "triggeredPrice": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Active", "Triggered", "Cancelled"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "triggeredAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "userEmail",
+        "username",
+        "serviceId",
+        "providerName",
+        "serviceName",
+        "accountType",
+        "country",
+        "targetPrice",
+        "initialPrice",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserAccount" },
+      "description": "User account metadata, role, verification status, and wallet balance summary."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated PII document storing user email, phone number, and last login IP."
+    },
+    "/deposits/{depositId}": {
+      "schema": { "$ref": "#/entities/Deposit" },
+      "description": "Crypto deposit submissions pending admin verification."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/ShippingOrder" },
+      "description": "Purchased shipping services and order fulfillment status."
+    },
+    "/transactions/{txId}": {
+      "schema": { "$ref": "#/entities/WalletTransaction" },
+      "description": "Unified wallet transaction ledger."
+    },
+    "/notifications/{notifId}": {
+      "schema": { "$ref": "#/entities/EmailNotification" },
+      "description": "Email notification log for registration, deposit approval, purchases, price drop alerts, and password reset."
+    },
+    "/loginLogs/{logId}": {
+      "schema": { "$ref": "#/entities/LoginActivity" },
+      "description": "Session and IP tracking logs per user."
+    },
+    "/supportTickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "Support tickets and live chat sessions."
+    },
+    "/supportTickets/{ticketId}/messages/{msgId}": {
+      "schema": { "$ref": "#/entities/SupportMessage" },
+      "description": "Support ticket and live chat conversation messages."
+    },
+    "/servicePricing/{serviceId}": {
+      "schema": { "$ref": "#/entities/ServicePriceOverride" },
+      "description": "Admin-managed live pricing overrides for verified account packages."
+    },
+    "/priceAlerts/{alertId}": {
+      "schema": { "$ref": "#/entities/PriceAlert" },
+      "description": "User-configured target price drop alerts for specific services, tiers, and countries."
+    }
+  }
+}

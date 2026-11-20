@@ -1,0 +1,567 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default-Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedEmail() && (
+        request.auth.token.email == 'johnblessing9977@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidUserAccount(data, userId) {
+      return data.keys().hasAll([
+        'uid', 'fullName', 'username', 'country', 'role', 'status',
+        'isVerified', 'walletBalance', 'totalDeposits', 'totalPurchases',
+        'twoFactorEnabled', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'uid', 'fullName', 'username', 'country', 'role', 'status',
+        'isVerified', 'walletBalance', 'totalDeposits', 'totalPurchases',
+        'twoFactorEnabled', 'createdAt', 'updatedAt'
+      ])
+      && data.uid is string && data.uid == userId && data.uid.size() <= 128
+      && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 100
+      && data.username is string && data.username.size() >= 2 && data.username.size() <= 40
+      && data.country is string && data.country.size() >= 2 && data.country.size() <= 64
+      && data.role is string && data.role in ['customer', 'admin']
+      && data.status is string && data.status in ['active', 'suspended']
+      && data.isVerified is bool
+      && (data.walletBalance is int || data.walletBalance is float) && data.walletBalance >= 0
+      && (data.totalDeposits is int || data.totalDeposits is float) && data.totalDeposits >= 0
+      && (data.totalPurchases is int || data.totalPurchases is float) && data.totalPurchases >= 0
+      && data.twoFactorEnabled is bool
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'phoneNumber', 'updatedAt'])
+      && data.keys().hasOnly(['uid', 'email', 'phoneNumber', 'lastLoginIp', 'updatedAt'])
+      && data.uid is string && data.uid == userId && data.uid.size() <= 128
+      && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+      && data.phoneNumber is string && data.phoneNumber.size() >= 3 && data.phoneNumber.size() <= 32
+      && (!('lastLoginIp' in data) || (data.lastLoginIp is string && data.lastLoginIp.size() <= 64))
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidDeposit(data, depositId) {
+      return data.keys().hasAll([
+        'id', 'userId', 'userEmail', 'username', 'amount', 'currency',
+        'walletAddress', 'txHash', 'status', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'userId', 'userEmail', 'username', 'amount', 'currency',
+        'walletAddress', 'txHash', 'receiptDataUrl', 'receiptFileName',
+        'status', 'adminNote', 'createdAt', 'updatedAt'
+      ])
+      && data.id is string && data.id == depositId && data.id.size() <= 128
+      && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128
+      && data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 160
+      && data.username is string && data.username.size() >= 1 && data.username.size() <= 40
+      && (data.amount is int || data.amount is float) && data.amount >= 100 && data.amount <= 10000000
+      && data.currency is string && data.currency in ['BTC', 'ETH', 'USDT_ERC20', 'USDT_TRC20']
+      && data.walletAddress is string && data.walletAddress.size() >= 20 && data.walletAddress.size() <= 128
+      && data.txHash is string && data.txHash.size() >= 10 && data.txHash.size() <= 160
+      && (!('receiptDataUrl' in data) || (
+        data.receiptDataUrl is string &&
+        data.receiptDataUrl.size() >= 30 &&
+        data.receiptDataUrl.size() <= 450000 &&
+        data.receiptDataUrl.matches('^data:(image/(jpeg|png|webp|gif)|application/pdf);base64,[A-Za-z0-9+/=]+$')
+      ))
+      && (!('receiptFileName' in data) || (
+        data.receiptFileName is string &&
+        data.receiptFileName.size() >= 1 &&
+        data.receiptFileName.size() <= 160
+      ))
+      && data.status is string && data.status in ['Pending', 'Approved', 'Rejected']
+      && (!('adminNote' in data) || (data.adminNote is string && data.adminNote.size() <= 300))
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidOrder(data, orderId) {
+      return data.keys().hasAll([
+        'id', 'userId', 'userEmail', 'username', 'providerId', 'providerName',
+        'serviceName', 'country', 'price', 'trackingCode', 'status',
+        'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'userId', 'userEmail', 'username', 'providerId', 'providerName',
+        'serviceName', 'accountType', 'country', 'price', 'trackingCode', 'status',
+        'recipientName', 'destinationCity', 'packageWeightKg', 'createdAt', 'updatedAt'
+      ])
+      && data.id is string && data.id == orderId && data.id.size() <= 128
+      && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128
+      && data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 160
+      && data.username is string && data.username.size() >= 1 && data.username.size() <= 40
+      && data.providerId is string && data.providerId.size() >= 1 && data.providerId.size() <= 64
+      && data.providerName is string && data.providerName.size() >= 1 && data.providerName.size() <= 64
+      && data.serviceName is string && data.serviceName.size() >= 1 && data.serviceName.size() <= 120
+      && (!('accountType' in data) || (data.accountType is string && data.accountType in ['Personal', 'Business', 'Corporate']))
+      && data.country is string && data.country.size() >= 2 && data.country.size() <= 64
+      && (data.price is int || data.price is float) && data.price >= 100 && data.price <= 100000
+      && data.trackingCode is string && data.trackingCode.size() >= 4 && data.trackingCode.size() <= 64
+      && data.status is string && data.status in ['Pending', 'Processing', 'Completed', 'Cancelled', 'Refunded']
+      && (!('recipientName' in data) || (data.recipientName is string && data.recipientName.size() <= 100))
+      && (!('destinationCity' in data) || (data.destinationCity is string && data.destinationCity.size() <= 100))
+      && (!('packageWeightKg' in data) || ((data.packageWeightKg is int || data.packageWeightKg is float) && data.packageWeightKg > 0 && data.packageWeightKg <= 10000))
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidTransaction(data, txId) {
+      return data.keys().hasAll([
+        'id', 'userId', 'type', 'amount', 'direction',
+        'referenceId', 'description', 'status', 'createdAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'userId', 'type', 'amount', 'direction',
+        'referenceId', 'description', 'status', 'createdAt'
+      ])
+      && data.id is string && data.id == txId && data.id.size() <= 128
+      && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128
+      && data.type is string && data.type in ['deposit', 'purchase', 'refund']
+      && (data.amount is int || data.amount is float) && data.amount > 0 && data.amount <= 10000000
+      && data.direction is string && data.direction in ['credit', 'debit']
+      && data.referenceId is string && data.referenceId.size() >= 1 && data.referenceId.size() <= 128
+      && data.description is string && data.description.size() >= 1 && data.description.size() <= 200
+      && data.status is string && data.status in ['Pending', 'Completed', 'Rejected', 'Refunded']
+      && data.createdAt is timestamp;
+    }
+
+    function isValidNotification(data, notifId) {
+      return data.keys().hasAll([
+        'id', 'userId', 'recipientEmail', 'subject', 'body', 'category', 'read', 'createdAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'userId', 'recipientEmail', 'subject', 'body', 'category', 'read', 'createdAt'
+      ])
+      && data.id is string && data.id == notifId && data.id.size() <= 128
+      && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128
+      && data.recipientEmail is string && data.recipientEmail.size() >= 3 && data.recipientEmail.size() <= 160
+      && data.subject is string && data.subject in [
+        'Welcome to BlueWhale Markethub',
+        'Deposit Successfully Added',
+        'Service Purchase Completed',
+        'Reset Your Password',
+        'Price Drop Alert Triggered'
+      ]
+      && data.body is string && data.body.size() >= 1 && data.body.size() <= 1000
+      && data.category is string && data.category in ['registration', 'deposit', 'purchase', 'security', 'price_alert']
+      && data.read is bool
+      && data.createdAt is timestamp;
+    }
+
+    function isValidLoginLog(data, logId) {
+      return data.keys().hasAll([
+        'id', 'userId', 'ipAddress', 'userAgent', 'deviceLabel', 'authMethod', 'createdAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'userId', 'ipAddress', 'userAgent', 'deviceLabel', 'authMethod', 'createdAt'
+      ])
+      && data.id is string && data.id == logId && data.id.size() <= 128
+      && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128
+      && data.ipAddress is string && data.ipAddress.size() >= 1 && data.ipAddress.size() <= 64
+      && data.userAgent is string && data.userAgent.size() >= 1 && data.userAgent.size() <= 240
+      && data.deviceLabel is string && data.deviceLabel.size() >= 1 && data.deviceLabel.size() <= 80
+      && data.authMethod is string && data.authMethod.size() >= 1 && data.authMethod.size() <= 40
+      && data.createdAt is timestamp;
+    }
+
+    function isValidSupportTicket(data, ticketId) {
+      return data.keys().hasAll([
+        'id', 'userId', 'userEmail', 'username', 'subject', 'category',
+        'priority', 'status', 'lastMessage', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'userId', 'userEmail', 'username', 'subject', 'category',
+        'priority', 'status', 'lastMessage', 'createdAt', 'updatedAt'
+      ])
+      && data.id is string && data.id == ticketId && data.id.size() <= 128
+      && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128
+      && data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 160
+      && data.username is string && data.username.size() >= 1 && data.username.size() <= 40
+      && data.subject is string && data.subject.size() >= 2 && data.subject.size() <= 160
+      && data.category is string && data.category in ['Account Provisioning', 'Carrier Onboarding', 'Crypto Deposit', 'Order Support', 'Live Chat', 'Technical']
+      && data.priority is string && data.priority in ['Normal', 'High', 'Urgent']
+      && data.status is string && data.status in ['Open', 'Replied', 'Resolved', 'Closed']
+      && data.lastMessage is string && data.lastMessage.size() >= 1 && data.lastMessage.size() <= 600
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidSupportMessage(data, msgId, ticketId) {
+      return data.keys().hasAll([
+        'id', 'ticketId', 'ticketOwnerId', 'senderId', 'senderRole', 'senderName', 'body', 'createdAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'ticketId', 'ticketOwnerId', 'senderId', 'senderRole', 'senderName', 'body', 'createdAt'
+      ])
+      && data.id is string && data.id == msgId && data.id.size() <= 128
+      && data.ticketId is string && data.ticketId == ticketId && data.ticketId.size() <= 128
+      && data.ticketOwnerId is string && data.ticketOwnerId.size() >= 1 && data.ticketOwnerId.size() <= 128
+      && data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 128
+      && data.senderRole is string && data.senderRole in ['customer', 'admin']
+      && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 100
+      && data.body is string && data.body.size() >= 1 && data.body.size() <= 1200
+      && data.createdAt is timestamp;
+    }
+
+    function isValidServicePriceOverride(data, serviceId) {
+      return data.keys().hasAll([
+        'serviceId', 'personalPrice', 'businessPrice', 'corporatePrice',
+        'isPublic', 'updatedBy', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'serviceId', 'personalPrice', 'businessPrice', 'corporatePrice',
+        'isPublic', 'updatedBy', 'updatedAt'
+      ])
+      && data.serviceId is string && data.serviceId == serviceId && data.serviceId.size() >= 1 && data.serviceId.size() <= 64
+      && (data.personalPrice is int || data.personalPrice is float) && data.personalPrice >= 100 && data.personalPrice <= 100000
+      && (data.businessPrice is int || data.businessPrice is float) && data.businessPrice >= 100 && data.businessPrice <= 100000
+      && (data.corporatePrice is int || data.corporatePrice is float) && data.corporatePrice >= 100 && data.corporatePrice <= 100000
+      && data.isPublic is bool && data.isPublic == true
+      && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128
+      && data.updatedAt is timestamp;
+    }
+
+    function isValidPriceAlert(data, alertId) {
+      return data.keys().hasAll([
+        'id', 'userId', 'userEmail', 'username', 'serviceId', 'providerName',
+        'serviceName', 'accountType', 'country', 'targetPrice', 'initialPrice',
+        'status', 'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'userId', 'userEmail', 'username', 'serviceId', 'providerName',
+        'serviceName', 'accountType', 'country', 'targetPrice', 'initialPrice',
+        'triggeredPrice', 'status', 'createdAt', 'updatedAt', 'triggeredAt'
+      ])
+      && data.id is string && data.id == alertId && data.id.size() <= 128
+      && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128
+      && data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 160
+      && data.username is string && data.username.size() >= 1 && data.username.size() <= 40
+      && data.serviceId is string && data.serviceId.size() >= 1 && data.serviceId.size() <= 64
+      && data.providerName is string && data.providerName.size() >= 1 && data.providerName.size() <= 64
+      && data.serviceName is string && data.serviceName.size() >= 1 && data.serviceName.size() <= 120
+      && data.accountType is string && data.accountType in ['Personal', 'Business', 'Corporate']
+      && data.country is string && data.country.size() >= 2 && data.country.size() <= 64
+      && (data.targetPrice is int || data.targetPrice is float) && data.targetPrice >= 1 && data.targetPrice <= 100000
+      && (data.initialPrice is int || data.initialPrice is float) && data.initialPrice >= 100 && data.initialPrice <= 100000
+      && (!('triggeredPrice' in data) || ((data.triggeredPrice is int || data.triggeredPrice is float) && data.triggeredPrice >= 100 && data.triggeredPrice <= 100000))
+      && data.status is string && data.status in ['Active', 'Triggered', 'Cancelled']
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp
+      && (!('triggeredAt' in data) || data.triggeredAt is timestamp);
+    }
+
+    // 4. Collection Match Blocks
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerifiedEmail()
+        && isValidId(userId)
+        && isOwner(userId)
+        && isValidUserAccount(incoming(), userId)
+        && (incoming().role == 'customer' || isAdmin())
+        && (incoming().isVerified == false || isAdmin())
+        && incoming().status == 'active'
+        && incoming().walletBalance == 0
+        && incoming().totalDeposits == 0
+        && incoming().totalPurchases == 0
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedEmail()
+        && isValidId(userId)
+        && isValidUserAccount(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'isVerified', 'role', 'walletBalance', 'totalDeposits', 'updatedAt'
+            ])
+          ) ||
+          (
+            isOwner(userId) &&
+            existing().status == 'active' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName', 'username', 'country', 'twoFactorEnabled', 'updatedAt'
+            ])
+          ) ||
+          (
+            isOwner(userId) &&
+            existing().status == 'active' &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'walletBalance', 'totalPurchases', 'updatedAt'
+            ]) &&
+            incoming().walletBalance < existing().walletBalance &&
+            incoming().walletBalance >= 0 &&
+            incoming().totalPurchases > existing().totalPurchases
+          )
+        );
+      allow delete: if false;
+
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+        allow list: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow create: if isVerifiedEmail()
+          && isValidId(userId)
+          && isValidId(docId)
+          && isOwner(userId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().updatedAt == request.time;
+        allow update: if isVerifiedEmail()
+          && isValidId(userId)
+          && isValidId(docId)
+          && isOwner(userId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'email', 'phoneNumber', 'lastLoginIp', 'updatedAt'
+          ]);
+        allow delete: if false;
+      }
+    }
+
+    match /deposits/{depositId} {
+      allow get: if isValidId(depositId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedEmail()
+        && isValidId(depositId)
+        && isValidDeposit(incoming(), depositId)
+        && 'receiptDataUrl' in incoming()
+        && 'receiptFileName' in incoming()
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'Pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(depositId)
+        && isValidDeposit(incoming(), depositId)
+        && existing().status == 'Pending'
+        && incoming().status in ['Approved', 'Rejected']
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminNote', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedEmail()
+        && isValidId(orderId)
+        && isValidOrder(incoming(), orderId)
+        && incoming().userId == request.auth.uid
+        && incoming().accountType in ['Personal', 'Business', 'Corporate']
+        && incoming().price >= 100
+        && incoming().status in ['Pending', 'Processing']
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(orderId)
+        && isValidOrder(incoming(), orderId)
+        && existing().status in ['Pending', 'Processing']
+        && incoming().status in ['Processing', 'Completed', 'Cancelled', 'Refunded']
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'trackingCode', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /transactions/{txId} {
+      allow get: if isValidId(txId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedEmail()
+        && isValidId(txId)
+        && isValidTransaction(incoming(), txId)
+        && incoming().createdAt == request.time
+        && (
+          isAdmin() ||
+          (
+            incoming().userId == request.auth.uid &&
+            (
+              (incoming().type == 'purchase' && incoming().direction == 'debit' && incoming().status == 'Completed') ||
+              (incoming().type == 'deposit' && incoming().direction == 'credit' && incoming().status == 'Pending')
+            )
+          )
+        );
+      allow update: if isAdmin()
+        && isValidId(txId)
+        && isValidTransaction(incoming(), txId)
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status']);
+      allow delete: if false;
+    }
+
+    match /notifications/{notifId} {
+      allow get: if isValidId(notifId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedEmail()
+        && isValidId(notifId)
+        && isValidNotification(incoming(), notifId)
+        && (incoming().userId == request.auth.uid || isAdmin())
+        && incoming().createdAt == request.time;
+      allow update: if isVerifiedEmail()
+        && isValidId(notifId)
+        && isValidNotification(incoming(), notifId)
+        && existing().userId == request.auth.uid
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['read']);
+      allow delete: if false;
+    }
+
+    match /loginLogs/{logId} {
+      allow get: if isValidId(logId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedEmail()
+        && isValidId(logId)
+        && isValidLoginLog(incoming(), logId)
+        && incoming().userId == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /supportTickets/{ticketId} {
+      allow get: if isValidId(ticketId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedEmail()
+        && isValidId(ticketId)
+        && isValidSupportTicket(incoming(), ticketId)
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'Open'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedEmail()
+        && isValidId(ticketId)
+        && isValidSupportTicket(incoming(), ticketId)
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'lastMessage', 'updatedAt'])) ||
+          (isOwner(existing().userId) && existing().status != 'Closed' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'lastMessage', 'updatedAt']))
+        );
+      allow delete: if false;
+
+      match /messages/{msgId} {
+        allow get: if isValidId(ticketId) && isValidId(msgId) && isSignedIn() && (
+          get(/databases/$(database)/documents/supportTickets/$(ticketId)).data.userId == request.auth.uid || isAdmin()
+        );
+        allow list: if isValidId(ticketId) && isSignedIn() && (
+          resource.data.ticketOwnerId == request.auth.uid || isAdmin()
+        );
+        allow create: if isVerifiedEmail()
+          && isValidId(ticketId)
+          && isValidId(msgId)
+          && isValidSupportMessage(incoming(), msgId, ticketId)
+          && incoming().senderId == request.auth.uid
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/supportTickets/$(ticketId))
+          && incoming().ticketOwnerId == get(/databases/$(database)/documents/supportTickets/$(ticketId)).data.userId
+          && (
+            (isAdmin() && incoming().senderRole == 'admin') ||
+            (get(/databases/$(database)/documents/supportTickets/$(ticketId)).data.userId == request.auth.uid && incoming().senderRole == 'customer')
+          );
+        allow update, delete: if false;
+      }
+    }
+
+    match /servicePricing/{serviceId} {
+      allow get: if isValidId(serviceId);
+      allow list: if resource.data.isPublic == true;
+      allow create, update: if isAdmin()
+        && isValidId(serviceId)
+        && isValidServicePriceOverride(incoming(), serviceId)
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow delete: if isAdmin() && isValidId(serviceId);
+    }
+
+    match /priceAlerts/{alertId} {
+      allow get: if isValidId(alertId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedEmail()
+        && isValidId(alertId)
+        && isValidPriceAlert(incoming(), alertId)
+        && incoming().userId == request.auth.uid
+        && incoming().status == 'Active'
+        && !('triggeredPrice' in incoming())
+        && !('triggeredAt' in incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedEmail()
+        && isValidId(alertId)
+        && isValidPriceAlert(incoming(), alertId)
+        && incoming().userId == existing().userId
+        && incoming().serviceId == existing().serviceId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isOwner(existing().userId) &&
+            existing().status != 'Cancelled' &&
+            incoming().status in ['Active', 'Cancelled'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['targetPrice', 'accountType', 'country', 'initialPrice', 'status', 'updatedAt'])
+          ) ||
+          (
+            (isOwner(existing().userId) || isAdmin()) &&
+            existing().status == 'Active' &&
+            incoming().status == 'Triggered' &&
+            'triggeredPrice' in incoming() &&
+            'triggeredAt' in incoming() &&
+            incoming().triggeredPrice < existing().targetPrice &&
+            incoming().triggeredAt == request.time &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'triggeredPrice', 'triggeredAt', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(alertId) && isVerifiedEmail() && (existing().userId == request.auth.uid || isAdmin());
+    }
+  }
+}

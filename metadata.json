@@ -1,0 +1,6 @@
+{
+  "name": "BlueWhale Markethub",
+  "description": "Verified account marketplace for buying Personal, Business, and Corporate accounts across UPS, FedEx, USPS, Royal Mail, ShipStation, EasyPost, EasyShip, and Stamps.com starting at $100+ by country and account tier.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

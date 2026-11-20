@@ -1,0 +1,152 @@
+{
+  "users": [
+    {
+      "uid": "jwt_c6cf140d4e144c349bf9d1dd9f86ef34",
+      "fullName": "John Blessing",
+      "username": "bw_admin",
+      "email": "johnblessing9977@gmail.com",
+      "passwordHash": "$2b$12$U/.9LxEy.O0vA6o/90IZv.08jhPsBn6kk67gneljCJjY4FUr7xUR6",
+      "country": "United Kingdom",
+      "phoneNumber": "+44 20 7946 0921",
+      "role": "admin",
+      "status": "active",
+      "isVerified": true,
+      "emailVerificationCode": "874553",
+      "passwordResetCode": null,
+      "walletBalance": 0,
+      "totalDeposits": 0,
+      "totalPurchases": 0,
+      "twoFactorEnabled": false,
+      "twoFactorSecret": null,
+      "createdAt": "2026-11-20T09:47:13.049Z",
+      "updatedAt": "2026-11-20T09:47:13.049Z"
+    },
+    {
+      "uid": "jwt_f69944c8bd1841c192f5bf29e1035885",
+      "fullName": "Receipt Test User",
+      "username": "receipttest_1795171929862",
+      "email": "receipttest_1795171929862@example.com",
+      "passwordHash": "$2b$12$TvI.UY9PKsLR3gLFzVJg..98D5LKP9SjgGP/9lyGMDJM.ERJdPL5W",
+      "country": "United States",
+      "phoneNumber": "+15551234567",
+      "role": "customer",
+      "status": "active",
+      "isVerified": false,
+      "emailVerificationCode": "941732",
+      "passwordResetCode": null,
+      "walletBalance": 250,
+      "totalDeposits": 250,
+      "totalPurchases": 0,
+      "twoFactorEnabled": false,
+      "twoFactorSecret": null,
+      "createdAt": "2026-11-20T10:52:10.371Z",
+      "updatedAt": "2026-11-20T10:52:10.901Z"
+    }
+  ],
+  "deposits": [
+    {
+      "id": "dep_cb54638af37842d6bd155986eb103e07",
+      "userId": "jwt_f69944c8bd1841c192f5bf29e1035885",
+      "userEmail": "receipttest_1795171929862@example.com",
+      "username": "receipttest_1795171929862",
+      "amount": 250,
+      "currency": "BTC",
+      "walletAddress": "bc1qk3seq4ae09fq7mj4hdsnhqeaukcssshyg4rpsa",
+      "txHash": "txhash_receipt_test_1795171930393",
+      "receiptDataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "receiptFileName": "btc-payment-proof.png",
+      "status": "Approved",
+      "createdAt": "2026-11-20T10:52:10.398Z",
+      "updatedAt": "2026-11-20T10:52:10.901Z",
+      "adminNote": "Receipt verified manually"
+    }
+  ],
+  "orders": [],
+  "transactions": [
+    {
+      "id": "tx_80d855aa78bc4db69c816a621084b821",
+      "userId": "jwt_f69944c8bd1841c192f5bf29e1035885",
+      "type": "deposit",
+      "amount": 250,
+      "direction": "credit",
+      "referenceId": "dep_cb54638af37842d6bd155986eb103e07",
+      "description": "Bitcoin (BTC) Deposit (txhash_recei...)",
+      "status": "Completed",
+      "createdAt": "2026-11-20T10:52:10.398Z"
+    }
+  ],
+  "notifications": [
+    {
+      "id": "notif_fe04fdf86f9f4b5c831867e277bda18b",
+      "userId": "jwt_f69944c8bd1841c192f5bf29e1035885",
+      "recipientEmail": "receipttest_1795171929862@example.com",
+      "subject": "Deposit Successfully Added",
+      "body": "Your BTC deposit of $250.00 (Tx: txhash_receipt...) has been verified and credited to your BlueWhale Markethub wallet.",
+      "category": "deposit",
+      "read": false,
+      "createdAt": "2026-11-20T10:52:10.901Z"
+    },
+    {
+      "id": "notif_f3831ea235c240129a80fe00300ca707",
+      "userId": "jwt_f69944c8bd1841c192f5bf29e1035885",
+      "recipientEmail": "receipttest_1795171929862@example.com",
+      "subject": "Welcome to BlueWhale Markethub",
+      "body": "Welcome Receipt Test User! Your BlueWhale Markethub account (@receipttest_1795171929862) has been created for United States. Verify your email address using verification code: 941732.",
+      "category": "registration",
+      "read": false,
+      "createdAt": "2026-11-20T10:52:10.371Z"
+    },
+    {
+      "id": "notif_6e574819648d450bbba15980fcf3e204",
+      "userId": "jwt_c6cf140d4e144c349bf9d1dd9f86ef34",
+      "recipientEmail": "johnblessing9977@gmail.com",
+      "subject": "Welcome to BlueWhale Markethub",
+      "body": "Welcome John Blessing! Your BlueWhale Markethub account (@bw_admin) has been created for United Kingdom. Verify your email address using verification code: 874553.",
+      "category": "registration",
+      "read": false,
+      "createdAt": "2026-11-20T09:47:13.049Z"
+    }
+  ],
+  "loginLogs": [
+    {
+      "id": "log_8d460e5c881547f0a93146112b1c72d8",
+      "userId": "jwt_c6cf140d4e144c349bf9d1dd9f86ef34",
+      "ipAddress": "127.0.0.1",
+      "userAgent": "node",
+      "deviceLabel": "Browser on Desktop",
+      "authMethod": "JWT + bcrypt",
+      "createdAt": "2026-11-20T10:52:10.891Z"
+    },
+    {
+      "id": "log_66b629b7b13841c58c37afc67f08edee",
+      "userId": "jwt_f69944c8bd1841c192f5bf29e1035885",
+      "ipAddress": "127.0.0.1",
+      "userAgent": "node",
+      "deviceLabel": "Browser on Desktop",
+      "authMethod": "JWT + bcrypt",
+      "createdAt": "2026-11-20T10:52:10.371Z"
+    },
+    {
+      "id": "log_a9925ade06fe49d1848deeb604c4f7c1",
+      "userId": "jwt_c6cf140d4e144c349bf9d1dd9f86ef34",
+      "ipAddress": "127.0.0.1",
+      "userAgent": "node",
+      "deviceLabel": "Browser on Desktop",
+      "authMethod": "JWT + bcrypt",
+      "createdAt": "2026-11-20T09:47:13.535Z"
+    },
+    {
+      "id": "log_15319e40e23c4714802163b32654d88b",
+      "userId": "jwt_c6cf140d4e144c349bf9d1dd9f86ef34",
+      "ipAddress": "127.0.0.1",
+      "userAgent": "node",
+      "deviceLabel": "Browser on Desktop",
+      "authMethod": "JWT + bcrypt",
+      "createdAt": "2026-11-20T09:47:13.049Z"
+    }
+  ],
+  "supportTickets": [],
+  "supportMessages": [],
+  "newsletterEmails": [],
+  "contactSubmissions": []
+}

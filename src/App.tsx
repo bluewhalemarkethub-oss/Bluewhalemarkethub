@@ -42,7 +42,9 @@ import {
   type SupportedCountry,
 } from './data/shippingCatalog';
 import {
+  adminDeleteFirebaseUser,
   adminReviewFirebaseDeposit,
+  adminReviewFirebaseRegistration,
   adminUpdateFirebaseOrder,
   adminUpdateFirebaseServicePrice,
   adminUpdateFirebaseTicketStatus,
@@ -52,37 +54,53 @@ import {
   createOrUpdateFirebasePriceAlert,
   deleteFirebasePriceAlert,
   ensureFirebaseUserProfile,
+  fetchFirebaseUserPrivateInfo,
   logFirebaseResetEmailNotification,
+  mapFirestoreAdminLog,
   mapFirestoreDeposit,
   mapFirestoreLoginLog,
   mapFirestoreNotification,
   mapFirestoreOrder,
   mapFirestorePriceAlert,
+  mapFirestoreRegistrationPayment,
   mapFirestoreServicePriceOverride,
   mapFirestoreSupportTicket,
   mapFirestoreTransaction,
+  mapFirestoreUserAccount,
+  mapFirestoreWebsiteSettings,
   markFirebaseNotificationRead,
   purchaseFirebaseService,
+  saveFirebaseWebsiteSettings,
   sendFirebaseSupportMessage,
   submitFirebaseDeposit,
+  submitFirebaseRegistrationPayment,
   triggerFirebasePriceAlert,
-  tsToIso,
   updateFirebaseProfile,
 } from './services/firestoreMarketplace';
-import type {
-  AuthMode,
-  CryptoPriceQuote,
-  DepositRecord,
-  EmailNotification,
-  LoginActivity,
-  PriceAlert,
-  SecurityContextInfo,
-  ServicePriceOverride,
-  ShippingOrder,
-  SupportMessage,
-  SupportTicket,
-  UserAccount,
-  WalletTransaction,
+import {
+  ADMIN_EMAIL,
+  getAccountStatusLoginMessage,
+  getSimpleAccountStatus,
+  isExclusiveAdmin,
+  isUserAccountApproved,
+  REGISTRATION_FEE_USD,
+  SUPPORT_EMAIL,
+  type AdminLogEntry,
+  type AuthMode,
+  type CryptoPriceQuote,
+  type DepositRecord,
+  type EmailNotification,
+  type LoginActivity,
+  type PriceAlert,
+  type RegistrationPayment,
+  type SecurityContextInfo,
+  type ServicePriceOverride,
+  type ShippingOrder,
+  type SupportMessage,
+  type SupportTicket,
+  type UserAccount,
+  type WalletTransaction,
+  type WebsiteSettings,
 } from './types/marketplace';
 import { ProviderLogo } from './components/ProviderLogo';
 import { AuthModal } from './components/AuthModal';
@@ -97,8 +115,21 @@ import { PriceAlertModal } from './components/PriceAlertModal';
 import { FooterInfoModal, type FooterPageId } from './components/FooterInfoModal';
 import { UserDashboard, type DashboardTab } from './components/UserDashboard';
 import { AdminDashboard } from './components/AdminDashboard';
+import { RegistrationVerificationView } from './components/RegistrationVerificationView';
 
 type ActiveView = 'marketplace' | 'dashboard' | 'admin';
+
+const DEFAULT_SITE_SETTINGS: WebsiteSettings = {
+  id: 'global',
+  registrationFeeUsd: REGISTRATION_FEE_USD,
+  minimumDepositUsd: 100,
+  supportEmail: SUPPORT_EMAIL,
+  marketplaceNotice:
+    'Personal, Business & Corporate accounts across 14 countries starting from $100+ · Fund wallet via BTC, ETH & USDT.',
+  requireRegistrationApproval: true,
+  updatedBy: 'system',
+  updatedAt: '',
+};
 
 const TESTIMONIALS = [
   {
@@ -179,11 +210,13 @@ export default function App() {
 
   // Navigation & Modals
   const [activeView, setActiveView] = useState<ActiveView>('marketplace');
+  const [adminAccessError, setAdminAccessError] = useState<string>('');
   const [dashboardTab, setDashboardTab] = useState<DashboardTab>('dashboard');
   const [announcementVisible, setAnnouncementVisible] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authInitialTab, setAuthInitialTab] = useState<'login' | 'register'>('login');
+  const [authInitialMessage, setAuthInitialMessage] = useState<string>('');
   const [depositModalOpen, setDepositModalOpen] = useState(false);
   const [paymentGuideOpen, setPaymentGuideOpen] = useState(false);
   const [paymentGuideAsset, setPaymentGuideAsset] = useState<InstructionAssetTab>('BTC');
@@ -220,13 +253,13 @@ export default function App() {
   const [newsletterStatus, setNewsletterStatus] = useState<'idle' | 'submitting' | 'subscribed' | 'error'>('idle');
   const [newsletterMessage, setNewsletterMessage] = useState('');
 
-  // Auth & Security Context
+  // Auth & Security Context (JWT kept in memory + HttpOnly session cookie, never localStorage)
   const [authReady, setAuthReady] = useState(false);
   const [authMode, setAuthMode] = useState<AuthMode>('firebase');
-  const [jwtToken, setJwtToken] = useState<string | null>(() =>
-    typeof window !== 'undefined' ? localStorage.getItem('bw_jwt_token') : null,
-  );
+  const [jwtToken, setJwtToken] = useState<string | null>(null);
+  const jwtTokenRef = useRef<string | null>(null);
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [verificationPreviewCode, setVerificationPreviewCode] = useState<string>('');
   const [securityCtx, setSecurityCtx] = useState<SecurityContextInfo>({
     ipAddress: '127.0.0.1',
     userAgent: 'Browser',
@@ -234,8 +267,19 @@ export default function App() {
     tlsActive: true,
   });
 
+  useEffect(() => {
+    jwtTokenRef.current = jwtToken;
+  }, [jwtToken]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('bw_jwt_token');
+    }
+  }, []);
+
   // Account & Admin Data
   const [deposits, setDeposits] = useState<DepositRecord[]>([]);
+  const [registrationPayments, setRegistrationPayments] = useState<RegistrationPayment[]>([]);
   const [orders, setOrders] = useState<ShippingOrder[]>([]);
   const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
   const [notifications, setNotifications] = useState<EmailNotification[]>([]);
@@ -243,6 +287,8 @@ export default function App() {
   const [supportTickets, setSupportTickets] = useState<SupportTicket[]>([]);
   const [supportMessages, setSupportMessages] = useState<SupportMessage[]>([]);
   const [adminUsers, setAdminUsers] = useState<UserAccount[]>([]);
+  const [adminLogs, setAdminLogs] = useState<AdminLogEntry[]>([]);
+  const [siteSettings, setSiteSettings] = useState<WebsiteSettings>(DEFAULT_SITE_SETTINGS);
   const [priceAlerts, setPriceAlerts] = useState<PriceAlert[]>([]);
   const [servicePricingMap, setServicePricingMap] = useState<Record<string, BaseTierPriceOverride>>({});
   const triggeredAlertIdsRef = useRef<Set<string>>(new Set());
@@ -281,7 +327,7 @@ export default function App() {
 
   // Fetch CSRF, IP security context, live crypto prices, and public pricing overrides on boot
   useEffect(() => {
-    void ensureCsrfToken();
+    void ensureCsrfToken().catch(() => {});
     void loadCryptoPrices();
     apiRequest<{ servicePricing: ServicePriceOverride[] }>('/api/catalog/pricing')
       .then((res) => {
@@ -290,18 +336,24 @@ export default function App() {
         }
       })
       .catch(() => {});
+    apiRequest<{ siteSettings: WebsiteSettings }>('/api/settings')
+      .then((res) => {
+        if (res.siteSettings) setSiteSettings(res.siteSettings);
+      })
+      .catch(() => {});
     apiRequest<SecurityContextInfo>('/api/security/context')
       .then((ctx) => setSecurityCtx(ctx))
       .catch(() => {});
   }, [loadCryptoPrices, applyServicePricingList]);
 
-  // Hydrate Express JWT dashboard when jwtToken is active
+  // Hydrate Express JWT dashboard when cookie/memory session is active
   const refreshJwtDashboard = useCallback(
-    async (token: string) => {
+    async (token?: string | null) => {
       try {
         const res = await apiRequest<{
           user: UserAccount;
           deposits: DepositRecord[];
+          registrationPayments: RegistrationPayment[];
           orders: ShippingOrder[];
           transactions: WalletTransaction[];
           notifications: EmailNotification[];
@@ -311,10 +363,13 @@ export default function App() {
           priceAlerts: PriceAlert[];
           servicePricing: ServicePriceOverride[];
           allUsers: UserAccount[];
-        }>('/api/jwt/dashboard', { jwtToken: token });
+          adminLogs?: AdminLogEntry[];
+          siteSettings?: WebsiteSettings;
+        }>('/api/jwt/dashboard', { jwtToken: token || jwtTokenRef.current || undefined });
         setAuthMode('jwt');
         setCurrentUser(res.user);
         setDeposits(res.deposits || []);
+        setRegistrationPayments(res.registrationPayments || []);
         setOrders(res.orders || []);
         setTransactions(res.transactions || []);
         setNotifications(res.notifications || []);
@@ -324,13 +379,28 @@ export default function App() {
         setPriceAlerts(res.priceAlerts || []);
         applyServicePricingList(res.servicePricing || []);
         setAdminUsers(res.allUsers || []);
+        setAdminLogs(res.adminLogs || []);
+        if (res.siteSettings) {
+          setSiteSettings(res.siteSettings);
+        }
         if (SUPPORTED_COUNTRIES.includes(res.user.country as SupportedCountry)) {
           setPreferredCountry(res.user.country as SupportedCountry);
         }
-      } catch {
-        localStorage.removeItem('bw_jwt_token');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '';
+        if (
+          msg === 'Your account is awaiting administrator approval.' ||
+          msg === 'Your registration was not approved. Please contact support.' ||
+          msg === 'Your account has been suspended. Contact support.'
+        ) {
+          setAdminAccessError(msg);
+        }
+        jwtTokenRef.current = null;
         setJwtToken(null);
         setCurrentUser(null);
+        setRegistrationPayments([]);
+        setAdminLogs([]);
+        setActiveView('marketplace');
       } finally {
         setAuthReady(true);
       }
@@ -338,7 +408,7 @@ export default function App() {
     [applyServicePricingList],
   );
 
-  // Listen to Firebase Auth state
+  // Listen to Firebase Auth state & restore HttpOnly session cookie if signed out of Firebase
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       if (fbUser) {
@@ -354,6 +424,16 @@ export default function App() {
             userAgent: securityCtx.userAgent,
             deviceLabel: securityCtx.deviceLabel,
           });
+          if (!isUserAccountApproved(profile)) {
+            const blockedMsg = getAccountStatusLoginMessage(getSimpleAccountStatus(profile));
+            if (!authModalOpen) {
+              await signOut(auth).catch(() => {});
+              setCurrentUser(null);
+              setAdminAccessError(blockedMsg);
+              setActiveView('marketplace');
+            }
+            return;
+          }
           setAuthMode('firebase');
           setCurrentUser(profile);
           if (SUPPORTED_COUNTRIES.includes(profile.country as SupportedCountry)) {
@@ -364,11 +444,33 @@ export default function App() {
         } finally {
           setAuthReady(true);
         }
-      } else if (jwtToken) {
-        void refreshJwtDashboard(jwtToken);
+      } else if (jwtTokenRef.current) {
+        void refreshJwtDashboard(jwtTokenRef.current);
       } else {
+        try {
+          const sessionRes = await apiRequest<{
+            user: UserAccount | null;
+            token?: string;
+            blockedMessage?: string;
+          }>('/api/auth/session');
+          if (sessionRes.user && isUserAccountApproved(sessionRes.user)) {
+            const restoredToken = sessionRes.token || 'cookie-session';
+            jwtTokenRef.current = restoredToken;
+            setJwtToken(restoredToken);
+            setAuthMode('jwt');
+            setCurrentUser(sessionRes.user);
+            await refreshJwtDashboard(restoredToken);
+            return;
+          }
+          if (sessionRes.blockedMessage) {
+            setAdminAccessError(sessionRes.blockedMessage);
+          }
+        } catch {
+          // No active Express cookie session
+        }
         setCurrentUser(null);
         setDeposits([]);
+        setRegistrationPayments([]);
         setOrders([]);
         setTransactions([]);
         setNotifications([]);
@@ -377,44 +479,47 @@ export default function App() {
         setSupportMessages([]);
         setPriceAlerts([]);
         setAdminUsers([]);
+        setAdminLogs([]);
         setAuthReady(true);
       }
     });
 
     return () => unsub();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jwtToken, securityCtx.ipAddress]);
+  }, [securityCtx.ipAddress]);
 
   // Attach real-time Firestore listeners when authenticated via Firebase
   useEffect(() => {
     if (!authReady || authMode !== 'firebase' || !currentUser?.uid) return;
 
+    let active = true;
     const uid = currentUser.uid;
-    const isAdmin = currentUser.role === 'admin';
+    const isAdmin = isExclusiveAdmin(currentUser);
 
     const unsubUser = onSnapshot(
       doc(db, 'users', uid),
       (snap) => {
         if (snap.exists()) {
-          const d = snap.data();
-          setCurrentUser((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  fullName: String(d.fullName || prev.fullName),
-                  username: String(d.username || prev.username),
-                  country: String(d.country || prev.country),
-                  role: (d.role as UserAccount['role']) || prev.role,
-                  status: (d.status as UserAccount['status']) || prev.status,
-                  isVerified: Boolean(d.isVerified),
-                  walletBalance: Number(d.walletBalance || 0),
-                  totalDeposits: Number(d.totalDeposits || 0),
-                  totalPurchases: Number(d.totalPurchases || 0),
-                  twoFactorEnabled: Boolean(d.twoFactorEnabled),
-                  updatedAt: tsToIso(d.updatedAt),
-                }
-              : prev,
-          );
+          const d = snap.data() as Record<string, unknown>;
+          setCurrentUser((prev) => {
+            if (!prev) return prev;
+            const nextProfile = mapFirestoreUserAccount(d, {
+              email: prev.email,
+              phoneNumber: prev.phoneNumber,
+            });
+            if (!isUserAccountApproved(nextProfile)) {
+              const blockedMsg = getAccountStatusLoginMessage(getSimpleAccountStatus(nextProfile));
+              setAdminAccessError(blockedMsg);
+              setActiveView('marketplace');
+              void signOut(auth).catch(() => {});
+              return null;
+            }
+            return nextProfile;
+          });
+        } else {
+          setCurrentUser(null);
+          setActiveView('marketplace');
+          void signOut(auth).catch(() => {});
         }
       },
       (err) => handleFirestoreError(err, OperationType.GET, `users/${uid}`),
@@ -448,7 +553,9 @@ export default function App() {
       (err) => handleFirestoreError(err, OperationType.LIST, 'orders'),
     );
 
-    const txQuery = query(collection(db, 'transactions'), where('userId', '==', uid));
+    const txQuery = isAdmin
+      ? collection(db, 'transactions')
+      : query(collection(db, 'transactions'), where('userId', '==', uid));
     const unsubTx = onSnapshot(
       txQuery,
       (snap) => {
@@ -526,38 +633,66 @@ export default function App() {
       (err) => handleFirestoreError(err, OperationType.LIST, 'servicePricing'),
     );
 
+    const regPayQuery = isAdmin
+      ? collection(db, 'registrationPayments')
+      : query(collection(db, 'registrationPayments'), where('userId', '==', uid));
+    const unsubRegPay = onSnapshot(
+      regPayQuery,
+      (snap) => {
+        const list = snap.docs
+          .map((d) => mapFirestoreRegistrationPayment(d.id, d.data() as Record<string, unknown>))
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        setRegistrationPayments(list);
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'registrationPayments'),
+    );
+
     let unsubAdminUsers: (() => void) | undefined;
+    let unsubAdminLogs: (() => void) | undefined;
     if (isAdmin) {
       unsubAdminUsers = onSnapshot(
         collection(db, 'users'),
         (snap) => {
-          const list = snap.docs.map((d) => {
-            const data = d.data();
-            return {
-              uid: String(data.uid || d.id),
-              fullName: String(data.fullName || ''),
-              username: String(data.username || ''),
-              email: '',
-              phoneNumber: '',
-              country: String(data.country || ''),
-              role: (data.role as UserAccount['role']) || 'customer',
-              status: (data.status as UserAccount['status']) || 'active',
-              isVerified: Boolean(data.isVerified),
-              walletBalance: Number(data.walletBalance || 0),
-              totalDeposits: Number(data.totalDeposits || 0),
-              totalPurchases: Number(data.totalPurchases || 0),
-              twoFactorEnabled: Boolean(data.twoFactorEnabled),
-              createdAt: tsToIso(data.createdAt),
-              updatedAt: tsToIso(data.updatedAt),
-            } satisfies UserAccount;
+          void Promise.all(
+            snap.docs.map(async (d) => {
+              const data = d.data() as Record<string, unknown>;
+              const uidVal = String(data.uid || d.id);
+              const priv = await fetchFirebaseUserPrivateInfo(uidVal);
+              return mapFirestoreUserAccount(data, priv);
+            }),
+          ).then((list) => {
+            if (active) setAdminUsers(list);
           });
-          setAdminUsers(list);
         },
         (err) => handleFirestoreError(err, OperationType.LIST, 'users'),
       );
+
+      unsubAdminLogs = onSnapshot(
+        collection(db, 'adminLogs'),
+        (snap) => {
+          const list = snap.docs
+            .map((d) => mapFirestoreAdminLog(d.id, d.data() as Record<string, unknown>))
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+          setAdminLogs(list);
+        },
+        (err) => handleFirestoreError(err, OperationType.LIST, 'adminLogs'),
+      );
     }
 
+    const unsubSiteSettings = onSnapshot(
+      doc(db, 'siteSettings', 'global'),
+      (snap) => {
+        if (snap.exists()) {
+          setSiteSettings(mapFirestoreWebsiteSettings(snap.id, snap.data() as Record<string, unknown>));
+        }
+      },
+      () => {
+        // Ignore if global settings document has not been created yet
+      },
+    );
+
     return () => {
+      active = false;
       unsubUser();
       unsubDeposits();
       unsubOrders();
@@ -567,9 +702,12 @@ export default function App() {
       unsubTickets();
       unsubAlerts();
       unsubPricing();
+      unsubRegPay();
+      unsubSiteSettings();
       if (unsubAdminUsers) unsubAdminUsers();
+      if (unsubAdminLogs) unsubAdminLogs();
     };
-  }, [authReady, authMode, currentUser?.uid, currentUser?.role, applyServicePricingList]);
+  }, [authReady, authMode, currentUser?.uid, currentUser?.role, currentUser?.email, applyServicePricingList]);
 
   // Listen to public Firestore servicePricing updates when using Firebase without an active session
   useEffect(() => {
@@ -592,9 +730,9 @@ export default function App() {
     return () => unsub();
   }, [jwtToken, authMode, currentUser?.uid, applyServicePricingList]);
 
-  // Automatic Firebase-mode Price Drop Alert evaluator for the signed-in user
+  // Automatic Firebase-mode Price Drop Alert evaluator for the approved signed-in user
   useEffect(() => {
-    if (authMode !== 'firebase' || !currentUser?.uid) return;
+    if (authMode !== 'firebase' || !currentUser?.uid || !isUserAccountApproved(currentUser)) return;
     for (const alert of priceAlerts) {
       if (alert.userId !== currentUser.uid || alert.status !== 'Active') continue;
       if (triggeredAlertIdsRef.current.has(alert.id)) continue;
@@ -615,17 +753,141 @@ export default function App() {
     }
   }, [authMode, currentUser?.uid, priceAlerts, servicePricingMap]);
 
-  // Keep JWT wallet balance & deposit approvals synchronized when signed in under JWT mode
+  const memberLocked = Boolean(currentUser && !isUserAccountApproved(currentUser));
+
+  const navigateToView = useCallback(
+    (target: ActiveView) => {
+      if (target === 'admin') {
+        if (!currentUser) {
+          setActiveView('marketplace');
+          if (typeof window !== 'undefined' && window.location.pathname !== '/') {
+            window.history.replaceState({}, '', '/');
+          }
+          setAuthInitialTab('login');
+          setAuthInitialMessage('');
+          setAuthModalOpen(true);
+          return;
+        }
+        if (!isExclusiveAdmin(currentUser)) {
+          setAdminAccessError(
+            `Access Denied: The administrator portal (/admin) is restricted exclusively to ${ADMIN_EMAIL}.`,
+          );
+          setActiveView('marketplace');
+          if (typeof window !== 'undefined' && window.location.pathname !== '/') {
+            window.history.replaceState({}, '', '/');
+          }
+          return;
+        }
+        setAdminAccessError('');
+        setActiveView('admin');
+        if (typeof window !== 'undefined' && window.location.pathname !== '/admin') {
+          window.history.pushState({}, '', '/admin');
+        }
+        return;
+      }
+
+      if (target === 'dashboard') {
+        if (!currentUser) {
+          setActiveView('marketplace');
+          if (typeof window !== 'undefined' && window.location.pathname !== '/') {
+            window.history.replaceState({}, '', '/');
+          }
+          setAuthInitialTab('login');
+          setAuthInitialMessage('');
+          setAuthModalOpen(true);
+          return;
+        }
+        if (!isUserAccountApproved(currentUser)) {
+          const blockedMsg = getAccountStatusLoginMessage(getSimpleAccountStatus(currentUser));
+          setAdminAccessError(blockedMsg);
+          setActiveView('marketplace');
+          if (typeof window !== 'undefined' && window.location.pathname !== '/') {
+            window.history.replaceState({}, '', '/');
+          }
+          return;
+        }
+        setAdminAccessError('');
+        setActiveView('dashboard');
+        if (typeof window !== 'undefined' && window.location.pathname !== '/dashboard') {
+          window.history.pushState({}, '', '/dashboard');
+        }
+        return;
+      }
+
+      setAdminAccessError('');
+      setActiveView(target);
+      if (
+        typeof window !== 'undefined' &&
+        (window.location.pathname.startsWith('/admin') ||
+          window.location.pathname.startsWith('/dashboard'))
+      ) {
+        window.history.pushState({}, '', '/');
+      }
+    },
+    [currentUser],
+  );
+
+  // Enforce strict /dashboard and /admin URL routing access control even if manually entered
+  useEffect(() => {
+    if (!authReady || typeof window === 'undefined') return;
+
+    const evaluateRoute = () => {
+      const pathname = window.location.pathname;
+      if (pathname.startsWith('/admin')) {
+        if (!currentUser) {
+          setActiveView('marketplace');
+          window.history.replaceState({}, '', '/');
+          setAuthInitialTab('login');
+          setAuthInitialMessage('');
+          setAuthModalOpen(true);
+        } else if (isExclusiveAdmin(currentUser)) {
+          setAdminAccessError('');
+          setActiveView('admin');
+        } else {
+          setActiveView('marketplace');
+          setAdminAccessError(
+            `Access Denied: The administrator portal (/admin) is restricted exclusively to ${ADMIN_EMAIL}.`,
+          );
+          window.history.replaceState({}, '', '/');
+        }
+      } else if (pathname.startsWith('/dashboard') || pathname.startsWith('/user-dashboard')) {
+        if (!currentUser) {
+          setActiveView('marketplace');
+          window.history.replaceState({}, '', '/');
+          setAuthInitialTab('login');
+          setAuthInitialMessage('');
+          setAuthModalOpen(true);
+        } else if (!isUserAccountApproved(currentUser)) {
+          setActiveView('marketplace');
+          setAdminAccessError(getAccountStatusLoginMessage(getSimpleAccountStatus(currentUser)));
+          window.history.replaceState({}, '', '/');
+        } else {
+          setAdminAccessError('');
+          setActiveView('dashboard');
+        }
+      } else if (activeView === 'admin' && !isExclusiveAdmin(currentUser)) {
+        setActiveView('marketplace');
+      } else if (activeView === 'dashboard' && (!currentUser || !isUserAccountApproved(currentUser))) {
+        setActiveView('marketplace');
+      }
+    };
+
+    evaluateRoute();
+    window.addEventListener('popstate', evaluateRoute);
+    return () => window.removeEventListener('popstate', evaluateRoute);
+  }, [authReady, currentUser, activeView]);
+
+  // Keep JWT status/wallet balance/approvals synchronized when signed in under JWT mode
   useEffect(() => {
     if (!authReady || authMode !== 'jwt' || !jwtToken) return;
     const hasPendingDeposit = deposits.some((d) => d.status === 'Pending');
-    if (activeView === 'marketplace' && !hasPendingDeposit) return;
+    if (activeView === 'marketplace' && !hasPendingDeposit && !memberLocked) return;
 
     const timer = window.setInterval(() => {
       void refreshJwtDashboard(jwtToken);
     }, 8000);
     return () => window.clearInterval(timer);
-  }, [authReady, authMode, jwtToken, activeView, deposits, refreshJwtDashboard]);
+  }, [authReady, authMode, jwtToken, activeView, deposits, memberLocked, refreshJwtDashboard]);
 
   const filteredServices = useMemo(() => {
     return SHIPPING_SERVICES.filter((svc) => svc.countries.includes(preferredCountry));
@@ -635,16 +897,33 @@ export default function App() {
     if (authMode === 'firebase') {
       await signOut(auth);
     }
+    if (authMode === 'jwt' || jwtTokenRef.current) {
+      await apiRequest('/api/auth/logout', {
+        method: 'POST',
+        jwtToken: jwtTokenRef.current || undefined,
+      }).catch(() => {});
+    }
     localStorage.removeItem('bw_jwt_token');
+    jwtTokenRef.current = null;
     setJwtToken(null);
     setCurrentUser(null);
-    setActiveView('marketplace');
+    setRegistrationPayments([]);
+    setAdminLogs([]);
+    setAdminAccessError('');
+    setVerificationPreviewCode('');
+    navigateToView('marketplace');
   }
 
   function handleOpenDepositFlow() {
     if (!currentUser) {
       setAuthInitialTab('login');
+      setAuthInitialMessage('');
       setAuthModalOpen(true);
+      return;
+    }
+    if (!isUserAccountApproved(currentUser)) {
+      setAdminAccessError(getAccountStatusLoginMessage(getSimpleAccountStatus(currentUser)));
+      navigateToView('marketplace');
       return;
     }
     setDepositModalOpen(true);
@@ -653,11 +932,58 @@ export default function App() {
   function openDashboard(targetTab: DashboardTab = 'dashboard') {
     if (!currentUser) {
       setAuthInitialTab('login');
+      setAuthInitialMessage('');
       setAuthModalOpen(true);
       return;
     }
+    if (!isUserAccountApproved(currentUser)) {
+      setAdminAccessError(getAccountStatusLoginMessage(getSimpleAccountStatus(currentUser)));
+      navigateToView('marketplace');
+      return;
+    }
     setDashboardTab(targetTab);
-    setActiveView('dashboard');
+    navigateToView('dashboard');
+  }
+
+  async function handleSubmitRegistrationPayment(payload: {
+    amount: number;
+    currency: CryptoCurrencyCode;
+    walletAddress: string;
+    txId: string;
+    receiptDataUrl: string;
+    receiptFileName: string;
+  }) {
+    if (!currentUser) throw new Error('Authentication required');
+    if (authMode === 'firebase') {
+      await submitFirebaseRegistrationPayment({
+        user: currentUser,
+        ...payload,
+      });
+    } else if (jwtToken) {
+      await apiRequest('/api/jwt/registration-payment', {
+        method: 'POST',
+        jwtToken,
+        body: {
+          amount: payload.amount,
+          currency: payload.currency,
+          txId: payload.txId,
+          receiptDataUrl: payload.receiptDataUrl,
+          receiptFileName: payload.receiptFileName,
+        },
+      });
+      await refreshJwtDashboard(jwtToken);
+    }
+  }
+
+  async function handleVerifyOptionalEmail(code: string) {
+    if (authMode !== 'jwt' || !jwtToken) return;
+    const res = await apiRequest<{ user: UserAccount }>('/api/auth/verify-email', {
+      method: 'POST',
+      jwtToken,
+      body: { code },
+    });
+    setCurrentUser(res.user);
+    await refreshJwtDashboard(jwtToken);
   }
 
   async function handleDepositSubmit(payload: {
@@ -665,16 +991,20 @@ export default function App() {
     currency: CryptoCurrencyCode;
     walletAddress: string;
     txHash: string;
-    receiptDataUrl: string;
+    receiptUrl?: string;
+    receiptDataUrl?: string;
     receiptFileName: string;
   }) {
     if (!currentUser) throw new Error('Authentication required');
+    if (!isUserAccountApproved(currentUser)) {
+      throw new Error('Your registration payment is currently awaiting administrator approval.');
+    }
     if (authMode === 'firebase') {
       await submitFirebaseDeposit({
         user: currentUser,
         ...payload,
       });
-    } else if (jwtToken) {
+    } else {
       await apiRequest('/api/jwt/deposits', {
         method: 'POST',
         jwtToken,
@@ -682,11 +1012,12 @@ export default function App() {
           amount: payload.amount,
           currency: payload.currency,
           txHash: payload.txHash,
-          receiptDataUrl: payload.receiptDataUrl,
+          ...(payload.receiptUrl ? { receiptUrl: payload.receiptUrl } : {}),
+          ...(payload.receiptDataUrl ? { receiptDataUrl: payload.receiptDataUrl } : {}),
           receiptFileName: payload.receiptFileName,
         },
       });
-      await refreshJwtDashboard(jwtToken);
+      await refreshJwtDashboard(jwtToken || 'cookie-session');
     }
   }
 
@@ -698,6 +1029,9 @@ export default function App() {
     destinationCity: string;
   }): Promise<{ trackingCode: string }> {
     if (!currentUser) throw new Error('Please sign in first.');
+    if (!isUserAccountApproved(currentUser)) {
+      throw new Error('Your registration payment is currently awaiting administrator approval.');
+    }
     if (authMode === 'firebase') {
       return purchaseFirebaseService({
         user: currentUser,
@@ -723,6 +1057,7 @@ export default function App() {
   }
 
   async function handleQuickBuy(service: ShippingServiceItem) {
+    if (memberLocked) return;
     const activePrice = getAccountPriceUsd(
       service,
       selectedAccountType,
@@ -766,6 +1101,7 @@ export default function App() {
     tier: AccountTier = selectedAccountType,
     country: SupportedCountry = preferredCountry,
   ) {
+    if (memberLocked) return;
     setAlertModalInitialTier(tier);
     setAlertModalInitialCountry(country);
     setAlertModalService(service);
@@ -891,65 +1227,72 @@ export default function App() {
           {/* Zone 1: Single-line Brand Wordmark */}
           <button
             type="button"
-            onClick={() => setActiveView('marketplace')}
+            onClick={() => navigateToView('marketplace')}
             className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0 cursor-pointer"
           >
             BlueWhale Markethub
           </button>
 
-          {/* Zone 2: Single-line text nav links */}
-          <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600 dark:text-slate-300">
-            <button
-              type="button"
-              onClick={() => setActiveView('marketplace')}
-              className={`hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeView === 'marketplace' ? 'text-blue-600 dark:text-blue-400 font-semibold' : ''
-              }`}
-            >
-              Marketplace
-            </button>
-            <a
-              href="#providers"
-              onClick={() => setActiveView('marketplace')}
-              className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0"
-            >
-              Providers
-            </a>
-            <a
-              href="#how-it-works"
-              onClick={() => setActiveView('marketplace')}
-              className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0"
-            >
-              How It Works
-            </a>
-            <button
-              type="button"
-              onClick={handleOpenDepositFlow}
-              className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              Wallet
-            </button>
-            <button
-              type="button"
-              onClick={() => openDashboard('dashboard')}
-              className={`hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeView === 'dashboard' ? 'text-blue-600 dark:text-blue-400 font-semibold' : ''
-              }`}
-            >
-              Dashboard
-            </button>
-            {currentUser?.role === 'admin' && (
+          {/* Zone 2: Single-line text nav links (Hidden while non-approved member gate is active) */}
+          {!memberLocked ? (
+            <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600 dark:text-slate-300">
               <button
                 type="button"
-                onClick={() => setActiveView('admin')}
+                onClick={() => navigateToView('marketplace')}
                 className={`hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  activeView === 'admin' ? 'text-blue-600 dark:text-blue-400 font-semibold' : ''
+                  activeView === 'marketplace' ? 'text-blue-600 dark:text-blue-400 font-semibold' : ''
                 }`}
               >
-                Admin
+                Marketplace
               </button>
-            )}
-          </nav>
+              <a
+                href="#providers"
+                onClick={() => navigateToView('marketplace')}
+                className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0"
+              >
+                Providers
+              </a>
+              <a
+                href="#how-it-works"
+                onClick={() => navigateToView('marketplace')}
+                className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0"
+              >
+                How It Works
+              </a>
+              <button
+                type="button"
+                onClick={handleOpenDepositFlow}
+                className="hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Wallet
+              </button>
+              <button
+                type="button"
+                onClick={() => openDashboard('dashboard')}
+                className={`hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  activeView === 'dashboard' ? 'text-blue-600 dark:text-blue-400 font-semibold' : ''
+                }`}
+              >
+                Dashboard
+              </button>
+              {isExclusiveAdmin(currentUser) && (
+                <button
+                  type="button"
+                  onClick={() => navigateToView('admin')}
+                  className={`hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    activeView === 'admin' ? 'text-blue-600 dark:text-blue-400 font-semibold' : ''
+                  }`}
+                >
+                  Admin
+                </button>
+              )}
+            </nav>
+          ) : (
+            <div className="hidden md:flex items-center gap-2 text-xs font-semibold text-amber-700 dark:text-amber-300">
+              <Lock className="w-3.5 h-3.5" />
+              <span>Account Approval Required ($5 Registration Verification)</span>
+            </div>
+          )}
 
           {/* Zone 3: Theme Toggle + Primary Action */}
           <div className="flex items-center gap-3 shrink-0">
@@ -964,13 +1307,15 @@ export default function App() {
 
             {currentUser ? (
               <div className="hidden sm:flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => openDashboard('wallet')}
-                  className="px-3.5 py-2 text-xs font-mono font-semibold tabular-nums text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-                >
-                  ${currentUser.walletBalance.toFixed(2)}
-                </button>
+                {!memberLocked && (
+                  <button
+                    type="button"
+                    onClick={() => openDashboard('wallet')}
+                    className="px-3.5 py-2 text-xs font-mono font-semibold tabular-nums text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 rounded-lg hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    ${currentUser.walletBalance.toFixed(2)}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleSignOut}
@@ -1006,47 +1351,55 @@ export default function App() {
         {/* Mobile Drawer */}
         {mobileMenuOpen && (
           <div className="md:hidden border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-4 py-4 space-y-2">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveView('marketplace');
-                setMobileMenuOpen(false);
-              }}
-              className="block w-full text-left px-3 py-2 text-sm font-medium rounded-lg hover:bg-slate-100 dark:hover:bg-slate-900"
-            >
-              Marketplace
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                handleOpenDepositFlow();
-              }}
-              className="block w-full text-left px-3 py-2 text-sm font-medium rounded-lg hover:bg-slate-100 dark:hover:bg-slate-900"
-            >
-              Wallet & Crypto Deposit
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                openDashboard('dashboard');
-              }}
-              className="block w-full text-left px-3 py-2 text-sm font-medium rounded-lg hover:bg-slate-100 dark:hover:bg-slate-900"
-            >
-              User Dashboard
-            </button>
-            {currentUser?.role === 'admin' && (
-              <button
-                type="button"
-                onClick={() => {
-                  setActiveView('admin');
-                  setMobileMenuOpen(false);
-                }}
-                className="block w-full text-left px-3 py-2 text-sm font-medium rounded-lg hover:bg-slate-100 dark:hover:bg-slate-900"
-              >
-                Admin Dashboard
-              </button>
+            {!memberLocked ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigateToView('marketplace');
+                    setMobileMenuOpen(false);
+                  }}
+                  className="block w-full text-left px-3 py-2 text-sm font-medium rounded-lg hover:bg-slate-100 dark:hover:bg-slate-900"
+                >
+                  Marketplace
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handleOpenDepositFlow();
+                  }}
+                  className="block w-full text-left px-3 py-2 text-sm font-medium rounded-lg hover:bg-slate-100 dark:hover:bg-slate-900"
+                >
+                  Wallet & Crypto Deposit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    openDashboard('dashboard');
+                  }}
+                  className="block w-full text-left px-3 py-2 text-sm font-medium rounded-lg hover:bg-slate-100 dark:hover:bg-slate-900"
+                >
+                  User Dashboard
+                </button>
+                {isExclusiveAdmin(currentUser) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigateToView('admin');
+                      setMobileMenuOpen(false);
+                    }}
+                    className="block w-full text-left px-3 py-2 text-sm font-medium rounded-lg hover:bg-slate-100 dark:hover:bg-slate-900"
+                  >
+                    Admin Dashboard
+                  </button>
+                )}
+              </>
+            ) : (
+              <div className="px-3 py-2 text-xs font-medium text-amber-700 dark:text-amber-300">
+                Verification Gate Active — Awaiting Administrator Approval
+              </div>
             )}
             <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
               {currentUser ? (
@@ -1078,14 +1431,34 @@ export default function App() {
         )}
       </header>
 
+      {/* Unauthorized Admin Route Access Alert */}
+      {adminAccessError && (
+        <div className="bg-rose-700 text-white border-b border-rose-800">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5 flex items-center justify-between gap-4 text-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span className="font-medium">{adminAccessError}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAdminAccessError('')}
+              aria-label="Dismiss access alert"
+              className="p-1 text-rose-100 hover:text-white shrink-0 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Non-sticky Announcement Bar */}
-      {announcementVisible && activeView === 'marketplace' && (
+      {!memberLocked && announcementVisible && activeView === 'marketplace' && (
         <div className="bg-slate-900 dark:bg-blue-950 text-slate-100 border-b border-slate-800">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2 flex items-center justify-between gap-4 text-xs">
             <div className="flex items-center gap-2 min-w-0">
               <span className="font-semibold text-blue-300 shrink-0">Verified Accounts:</span>
               <span className="truncate text-slate-200">
-                Personal, Business &amp; Corporate accounts across 14 countries starting from $100+ · Fund wallet via BTC, ETH &amp; USDT.
+                {siteSettings.marketplaceNotice || DEFAULT_SITE_SETTINGS.marketplaceNotice}
               </span>
             </div>
             <button
@@ -1101,7 +1474,7 @@ export default function App() {
       )}
 
       {/* Price Drop Alert Banner */}
-      {currentUser && unreadPriceAlertNotifs.length > 0 && (
+      {!memberLocked && currentUser && unreadPriceAlertNotifs.length > 0 && (
         <div className="bg-emerald-600 dark:bg-emerald-900 text-white border-b border-emerald-700 dark:border-emerald-800">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
             <div className="flex items-center gap-2 min-w-0">
@@ -1134,7 +1507,33 @@ export default function App() {
 
       {/* Main Content Router */}
       <main className="flex-1">
-        {activeView === 'dashboard' && currentUser ? (
+        {memberLocked && currentUser ? (
+          <RegistrationVerificationView
+            user={currentUser}
+            authMode={authMode}
+            latestPayment={
+              registrationPayments.find((p) => p.id === currentUser.registrationPaymentId) ||
+              registrationPayments.find((p) => p.userId === currentUser.uid) ||
+              null
+            }
+            notifications={notifications}
+            verificationPreviewCode={verificationPreviewCode}
+            onSubmitPayment={handleSubmitRegistrationPayment}
+            onVerifyOptionalEmail={
+              authMode === 'jwt' ? handleVerifyOptionalEmail : undefined
+            }
+            onRefreshStatus={async () => {
+              if (authMode === 'jwt') {
+                await refreshJwtDashboard(jwtToken);
+              }
+            }}
+            onOpenPaymentGuide={(asset) => {
+              setPaymentGuideAsset(asset);
+              setPaymentGuideOpen(true);
+            }}
+            onLogout={handleSignOut}
+          />
+        ) : activeView === 'dashboard' && currentUser && isUserAccountApproved(currentUser) ? (
           <UserDashboard
             user={currentUser}
             authMode={authMode}
@@ -1244,32 +1643,73 @@ export default function App() {
               }
             }}
           />
-        ) : activeView === 'admin' && currentUser?.role === 'admin' ? (
+        ) : activeView === 'admin' && isExclusiveAdmin(currentUser) && currentUser ? (
           <AdminDashboard
             authMode={authMode}
             users={adminUsers}
+            registrationPayments={registrationPayments}
             deposits={deposits}
             orders={orders}
+            transactions={transactions}
             supportTickets={supportTickets}
             supportMessages={supportMessages}
             loginLogs={loginLogs}
+            adminLogs={adminLogs}
+            siteSettings={siteSettings}
             priceOverrides={servicePricingMap}
             priceAlerts={priceAlerts}
-            onReviewDeposit={async (deposit, decision, note) => {
+            onReviewRegistration={async (payload) => {
               if (authMode === 'firebase') {
-                await adminReviewFirebaseDeposit({ deposit, decision, adminNote: note });
+                await adminReviewFirebaseRegistration({
+                  userId: payload.user.uid,
+                  userEmail: payload.user.email,
+                  fullName: payload.user.fullName,
+                  username: payload.user.username,
+                  previousStatus: String(payload.user.status),
+                  paymentId: payload.paymentId,
+                  decision: payload.decision,
+                  rejectionReason: payload.rejectionReason,
+                  adminNotes: payload.adminNotes,
+                  adminUser: { uid: currentUser.uid, email: currentUser.email },
+                });
               } else if (jwtToken) {
-                await apiRequest(`/api/jwt/admin/deposits/${deposit.id}/review`, {
+                await apiRequest(`/api/jwt/admin/registrations/${payload.user.uid}/review`, {
                   method: 'POST',
                   jwtToken,
-                  body: { decision, adminNote: note },
+                  body: {
+                    decision: payload.decision,
+                    rejectionReason: payload.rejectionReason,
+                    adminNotes: payload.adminNotes,
+                  },
                 });
                 await refreshJwtDashboard(jwtToken);
               }
             }}
+            onReviewDeposit={async (deposit, decision, note, rejectionReason) => {
+              if (authMode === 'firebase') {
+                await adminReviewFirebaseDeposit({
+                  deposit,
+                  decision,
+                  adminNote: note,
+                  rejectionReason,
+                  adminUser: { uid: currentUser.uid, email: currentUser.email },
+                });
+              } else {
+                await apiRequest(`/api/jwt/admin/deposits/${deposit.id}/review`, {
+                  method: 'POST',
+                  jwtToken,
+                  body: { decision, adminNote: note, rejectionReason },
+                });
+                await refreshJwtDashboard(jwtToken || 'cookie-session');
+              }
+            }}
             onUpdateOrderStatus={async (order, action) => {
               if (authMode === 'firebase') {
-                await adminUpdateFirebaseOrder({ order, action });
+                await adminUpdateFirebaseOrder({
+                  order,
+                  action,
+                  adminUser: { uid: currentUser.uid, email: currentUser.email },
+                });
               } else if (jwtToken) {
                 await apiRequest(`/api/jwt/admin/orders/${order.id}/status`, {
                   method: 'POST',
@@ -1281,12 +1721,29 @@ export default function App() {
             }}
             onUpdateUser={async (uid, updates) => {
               if (authMode === 'firebase') {
-                await adminUpdateFirebaseUser(uid, updates);
+                await adminUpdateFirebaseUser(uid, updates, {
+                  targetUser: adminUsers.find((u) => u.uid === uid),
+                  adminUser: { uid: currentUser.uid, email: currentUser.email },
+                });
               } else if (jwtToken) {
                 await apiRequest(`/api/jwt/admin/users/${uid}/update`, {
                   method: 'POST',
                   jwtToken,
                   body: updates,
+                });
+                await refreshJwtDashboard(jwtToken);
+              }
+            }}
+            onDeleteUser={async (targetUser) => {
+              if (authMode === 'firebase') {
+                await adminDeleteFirebaseUser(targetUser.uid, {
+                  targetUser,
+                  adminUser: { uid: currentUser.uid, email: currentUser.email },
+                });
+              } else if (jwtToken) {
+                await apiRequest(`/api/jwt/admin/users/${targetUser.uid}`, {
+                  method: 'DELETE',
+                  jwtToken,
                 });
                 await refreshJwtDashboard(jwtToken);
               }
@@ -1309,7 +1766,10 @@ export default function App() {
             }}
             onUpdateTicketStatus={async (ticketId, status) => {
               if (authMode === 'firebase') {
-                await adminUpdateFirebaseTicketStatus(ticketId, status);
+                await adminUpdateFirebaseTicketStatus(ticketId, status, {
+                  uid: currentUser.uid,
+                  email: currentUser.email,
+                });
               } else if (jwtToken) {
                 await apiRequest(`/api/jwt/admin/support/tickets/${ticketId}/status`, {
                   method: 'POST',
@@ -1323,6 +1783,7 @@ export default function App() {
               if (authMode === 'firebase') {
                 return adminUpdateFirebaseServicePrice({
                   adminUid: currentUser.uid,
+                  adminEmail: currentUser.email,
                   ...payload,
                 });
               }
@@ -1340,6 +1801,22 @@ export default function App() {
                 return { triggeredCount: res.triggeredCount || 0 };
               }
               throw new Error('Authentication session missing.');
+            }}
+            onSaveSiteSettings={async (settings) => {
+              if (authMode === 'firebase') {
+                await saveFirebaseWebsiteSettings({
+                  adminUser: { uid: currentUser.uid, email: currentUser.email },
+                  ...settings,
+                });
+              } else if (jwtToken) {
+                const res = await apiRequest<{ siteSettings: WebsiteSettings }>('/api/jwt/admin/settings', {
+                  method: 'POST',
+                  jwtToken,
+                  body: settings,
+                });
+                if (res.siteSettings) setSiteSettings(res.siteSettings);
+                await refreshJwtDashboard(jwtToken);
+              }
             }}
           />
         ) : (
@@ -2031,6 +2508,16 @@ export default function App() {
                 <ShieldCheck className="w-4 h-4 text-blue-400 shrink-0" />
                 <span>Encrypted Transactions · Compliance Verified · 24/7 Support Desk</span>
               </div>
+              <div className="flex items-center gap-2 text-xs text-slate-300 pt-1">
+                <Mail className="w-4 h-4 text-blue-400 shrink-0" />
+                <span>Support Email:</span>
+                <a
+                  href={`mailto:${SUPPORT_EMAIL}`}
+                  className="font-semibold text-blue-400 hover:underline"
+                >
+                  {SUPPORT_EMAIL}
+                </a>
+              </div>
             </div>
 
             {/* Footer Page Links */}
@@ -2098,7 +2585,13 @@ export default function App() {
 
           <div className="pt-6 border-t border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
             <span>© {new Date().getFullYear()} BlueWhale Markethub. All rights reserved.</span>
-            <span>Verified Account Marketplace · BTC · ETH · USDT ERC20 · USDT TRC20</span>
+            <span>
+              Support:{' '}
+              <a href={`mailto:${SUPPORT_EMAIL}`} className="text-slate-300 hover:text-white underline">
+                {SUPPORT_EMAIL}
+              </a>{' '}
+              · BTC · ETH · USDT ERC20 · USDT TRC20
+            </span>
           </div>
         </div>
       </footer>
@@ -2107,15 +2600,26 @@ export default function App() {
       <AuthModal
         isOpen={authModalOpen}
         initialTab={authInitialTab}
-        onClose={() => setAuthModalOpen(false)}
-        onJwtSuccess={({ token, user }) => {
-          localStorage.setItem('bw_jwt_token', token);
+        initialMessage={authInitialMessage}
+        onClose={() => {
+          setAuthInitialMessage('');
+          setAuthModalOpen(false);
+        }}
+        onJwtSuccess={({ token, user, verificationPreviewCode: vCode }) => {
+          jwtTokenRef.current = token;
           setJwtToken(token);
           setAuthMode('jwt');
           setCurrentUser(user);
+          if (vCode) setVerificationPreviewCode(vCode);
           void refreshJwtDashboard(token);
-          setDashboardTab('dashboard');
-          setActiveView('dashboard');
+          if (isExclusiveAdmin(user)) {
+            navigateToView('admin');
+          } else if (isUserAccountApproved(user)) {
+            setDashboardTab('dashboard');
+            navigateToView('dashboard');
+          } else {
+            navigateToView('marketplace');
+          }
         }}
         onGoogleSuccess={async (extra) => {
           const fbUser = auth.currentUser;
@@ -2131,15 +2635,25 @@ export default function App() {
             userAgent: securityCtx.userAgent,
             deviceLabel: securityCtx.deviceLabel,
           });
+          if (!isUserAccountApproved(profile)) {
+            return profile;
+          }
           setAuthMode('firebase');
           setCurrentUser(profile);
-          setDashboardTab('dashboard');
-          setActiveView('dashboard');
+          if (isExclusiveAdmin(profile)) {
+            navigateToView('admin');
+          } else {
+            setDashboardTab('dashboard');
+            navigateToView('dashboard');
+          }
+          return profile;
         }}
       />
 
       <DepositModal
-        isOpen={depositModalOpen}
+        isOpen={depositModalOpen && !memberLocked}
+        jwtToken={jwtToken}
+        clientUid={currentUser?.uid}
         onClose={() => setDepositModalOpen(false)}
         onOpenInstructions={(asset) => {
           setPaymentGuideAsset(asset);
@@ -2152,11 +2666,13 @@ export default function App() {
         isOpen={paymentGuideOpen}
         onClose={() => setPaymentGuideOpen(false)}
         initialAsset={paymentGuideAsset}
-        onProceedToDeposit={depositModalOpen ? undefined : handleOpenDepositFlow}
+        onProceedToDeposit={
+          depositModalOpen || memberLocked ? undefined : handleOpenDepositFlow
+        }
       />
 
       <ServiceDetailModal
-        service={detailService}
+        service={memberLocked ? null : detailService}
         selectedCountry={preferredCountry}
         selectedAccountType={selectedAccountType}
         priceOverride={detailService ? servicePricingMap[detailService.id] || null : null}
@@ -2180,7 +2696,7 @@ export default function App() {
       />
 
       <PriceAlertModal
-        service={alertModalService}
+        service={memberLocked ? null : alertModalService}
         initialCountry={alertModalInitialCountry}
         initialAccountType={alertModalInitialTier}
         priceOverrides={servicePricingMap}
@@ -2198,7 +2714,7 @@ export default function App() {
       />
 
       <PurchaseModal
-        service={selectedService}
+        service={memberLocked ? null : selectedService}
         country={preferredCountry}
         initialAccountType={selectedAccountType}
         priceOverride={selectedService ? servicePricingMap[selectedService.id] || null : null}

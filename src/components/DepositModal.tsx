@@ -12,12 +12,14 @@ import {
   BookOpen,
 } from 'lucide-react';
 import { CRYPTO_WALLETS, type CryptoCurrencyCode } from '../data/shippingCatalog';
-import { apiRequest } from '../lib/apiClient';
+import { apiRequest, ApiUnavailableError, uploadReceiptFile } from '../lib/apiClient';
 import { QrCodeCanvas } from './QrCodeCanvas';
 import { mapCurrencyCodeToAssetTab, type InstructionAssetTab } from './PaymentInstructionsModal';
 
 interface DepositModalProps {
   isOpen: boolean;
+  jwtToken?: string | null;
+  clientUid?: string;
   onClose: () => void;
   onOpenInstructions?: (asset: InstructionAssetTab) => void;
   onSubmitDeposit: (payload: {
@@ -25,12 +27,14 @@ interface DepositModalProps {
     currency: CryptoCurrencyCode;
     walletAddress: string;
     txHash: string;
-    receiptDataUrl: string;
+    receiptUrl?: string;
+    receiptDataUrl?: string;
     receiptFileName: string;
   }) => Promise<void>;
 }
 
 const MAX_RECEIPT_DATA_URL_CHARS = 450000;
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 async function processReceiptFile(
   file: File,
@@ -103,6 +107,8 @@ async function processReceiptFile(
 
 export function DepositModal({
   isOpen,
+  jwtToken,
+  clientUid,
   onClose,
   onOpenInstructions,
   onSubmitDeposit,
@@ -110,8 +116,10 @@ export function DepositModal({
   const [selectedCode, setSelectedCode] = useState<CryptoCurrencyCode>('BTC');
   const [amountInput, setAmountInput] = useState<string>('250');
   const [txHash, setTxHash] = useState<string>('');
+  const [receiptUrl, setReceiptUrl] = useState<string>('');
   const [receiptDataUrl, setReceiptDataUrl] = useState<string>('');
   const [receiptFileName, setReceiptFileName] = useState<string>('');
+  const [receiptSizeBytes, setReceiptSizeBytes] = useState<number>(0);
   const [processingReceipt, setProcessingReceipt] = useState(false);
   const [copied, setCopied] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -124,6 +132,8 @@ export function DepositModal({
   const activeWallet = CRYPTO_WALLETS.find((w) => w.code === selectedCode) || CRYPTO_WALLETS[0];
   const numericAmount = Number(amountInput);
   const isAmountValid = !Number.isNaN(numericAmount) && numericAmount >= 100;
+  const hasReceipt = Boolean((receiptUrl || receiptDataUrl) && receiptFileName);
+  const activeReceiptSrc = receiptUrl || receiptDataUrl;
 
   async function handleCopy() {
     try {
@@ -139,15 +149,52 @@ export function DepositModal({
     if (!file) return;
     setError('');
     setSuccessMsg('');
+    const allowedTypes = [
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+      'application/pdf',
+    ];
+    if (!allowedTypes.includes(file.type)) {
+      setError('Unsupported file format. Upload a PNG, JPG, WEBP, GIF screenshot or a PDF receipt.');
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError('Receipt file exceeds the 5 MB upload limit.');
+      return;
+    }
+
     setProcessingReceipt(true);
     try {
-      const processed = await processReceiptFile(file);
-      setReceiptDataUrl(processed.dataUrl);
-      setReceiptFileName(processed.fileName);
+      const cleanName = file.name.trim().slice(0, 160) || 'payment-receipt';
+      try {
+        const uploaded = await uploadReceiptFile(file, cleanName, file.type, {
+          jwtToken,
+          clientUid,
+        });
+        setReceiptUrl(uploaded.receiptUrl);
+        setReceiptDataUrl('');
+        setReceiptFileName(uploaded.receiptFileName);
+        setReceiptSizeBytes(uploaded.sizeBytes);
+      } catch (uploadErr) {
+        const msg = uploadErr instanceof Error ? uploadErr.message : '';
+        if (uploadErr instanceof ApiUnavailableError || msg.includes('(404)')) {
+          const processed = await processReceiptFile(file);
+          setReceiptUrl('');
+          setReceiptDataUrl(processed.dataUrl);
+          setReceiptFileName(processed.fileName);
+          setReceiptSizeBytes(Math.round(processed.dataUrl.length * 0.75));
+        } else {
+          throw uploadErr;
+        }
+      }
     } catch (err) {
+      setReceiptUrl('');
       setReceiptDataUrl('');
       setReceiptFileName('');
-      setError(err instanceof Error ? err.message : 'Unable to process payment receipt.');
+      setReceiptSizeBytes(0);
+      setError(err instanceof Error ? err.message : 'Unable to upload payment receipt.');
     } finally {
       setProcessingReceipt(false);
       if (fileInputRef.current) {
@@ -157,8 +204,10 @@ export function DepositModal({
   }
 
   function clearReceipt() {
+    setReceiptUrl('');
     setReceiptDataUrl('');
     setReceiptFileName('');
+    setReceiptSizeBytes(0);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -177,34 +226,41 @@ export function DepositModal({
       setError('Please enter a valid blockchain transaction hash (minimum 10 characters).');
       return;
     }
-    if (!receiptDataUrl || !receiptFileName) {
+    if (!hasReceipt) {
       setError('Please upload your payment receipt screenshot or PDF before submitting.');
       return;
     }
 
     setSubmitting(true);
     try {
-      // Anti-fraud pre-screen check on Express backend
-      await apiRequest('/api/security/antifraud-check', {
-        method: 'POST',
-        body: {
-          action: 'deposit',
-          amount: numericAmount,
-          txHash: txHash.trim(),
-        },
-      });
+      // Anti-fraud pre-screen check on Express backend (skipped gracefully on static-only hosts)
+      try {
+        await apiRequest('/api/security/antifraud-check', {
+          method: 'POST',
+          body: {
+            action: 'deposit',
+            amount: numericAmount,
+            txHash: txHash.trim(),
+          },
+        });
+      } catch (afErr) {
+        if (!(afErr instanceof ApiUnavailableError)) {
+          throw afErr;
+        }
+      }
 
       await onSubmitDeposit({
         amount: numericAmount,
         currency: activeWallet.code,
         walletAddress: activeWallet.address,
         txHash: txHash.trim(),
-        receiptDataUrl,
+        ...(receiptUrl ? { receiptUrl } : {}),
+        ...(receiptDataUrl ? { receiptDataUrl } : {}),
         receiptFileName,
       });
 
       setSuccessMsg(
-        `Deposit of $${numericAmount.toFixed(2)} (${activeWallet.name}) and payment receipt submitted with status Pending. Your wallet balance updates once an administrator manually confirms and approves the payment.`,
+        'Deposit request submitted successfully.\n\nYour payment is currently awaiting administrator review.\n\nFunds will be credited to your wallet balance after approval.',
       );
       setTxHash('');
       clearReceipt();
@@ -215,8 +271,15 @@ export function DepositModal({
     }
   }
 
-  const approxSizeKb = receiptDataUrl ? Math.max(1, Math.round((receiptDataUrl.length * 0.75) / 1024)) : 0;
-  const isPdfReceipt = receiptDataUrl.startsWith('data:application/pdf');
+  const approxSizeKb = receiptSizeBytes
+    ? Math.max(1, Math.round(receiptSizeBytes / 1024))
+    : receiptDataUrl
+      ? Math.max(1, Math.round((receiptDataUrl.length * 0.75) / 1024))
+      : 0;
+  const isPdfReceipt =
+    activeReceiptSrc.startsWith('data:application/pdf') ||
+    activeReceiptSrc.toLowerCase().endsWith('.pdf') ||
+    receiptFileName.toLowerCase().endsWith('.pdf');
 
   return (
     <div
@@ -396,7 +459,7 @@ export function DepositModal({
               id="deposit-receipt-input"
             />
 
-            {!receiptDataUrl ? (
+            {!hasReceipt ? (
               <label
                 htmlFor="deposit-receipt-input"
                 onDragOver={(e) => e.preventDefault()}
@@ -411,11 +474,11 @@ export function DepositModal({
                 </div>
                 <div className="text-xs font-medium text-slate-800 dark:text-slate-200">
                   {processingReceipt
-                    ? 'Processing payment receipt...'
+                    ? 'Uploading payment receipt...'
                     : 'Click to upload or drag & drop your transfer receipt'}
                 </div>
                 <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Supports PNG, JPG, WEBP, GIF screenshots (auto-optimized) or PDF up to 320 KB
+                  Supports PNG, JPG, WEBP, GIF screenshots or PDF receipts up to 5 MB
                 </div>
               </label>
             ) : (
@@ -427,7 +490,7 @@ export function DepositModal({
                     </div>
                   ) : (
                     <img
-                      src={receiptDataUrl}
+                      src={activeReceiptSrc}
                       alt="Uploaded payment receipt preview"
                       className="w-14 h-14 rounded-lg object-cover border border-slate-200 dark:border-slate-800 bg-white shrink-0"
                     />
@@ -437,7 +500,7 @@ export function DepositModal({
                       {receiptFileName}
                     </div>
                     <div className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-0.5">
-                      Ready · ~{approxSizeKb} KB
+                      Uploaded · ~{approxSizeKb} KB
                     </div>
                   </div>
                 </div>
@@ -468,7 +531,7 @@ export function DepositModal({
           )}
 
           {successMsg && (
-            <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-sm text-emerald-800 dark:text-emerald-200">
+            <div className="p-3.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 text-sm text-emerald-800 dark:text-emerald-200 whitespace-pre-line">
               {successMsg}
             </div>
           )}
@@ -483,7 +546,7 @@ export function DepositModal({
             </button>
             <button
               type="submit"
-              disabled={submitting || processingReceipt || !isAmountValid || !receiptDataUrl}
+              disabled={submitting || processingReceipt || !isAmountValid || !hasReceipt}
               className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg transition-colors"
             >
               <span>{submitting ? 'Submitting...' : 'Submit Deposit & Receipt'}</span>

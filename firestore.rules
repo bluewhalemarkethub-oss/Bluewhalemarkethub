@@ -33,10 +33,24 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isVerifiedEmail() && (
-        request.auth.token.email == 'johnblessing9977@gmail.com' ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
+      return isVerifiedEmail() && request.auth.token.email == 'johnblessing9977@gmail.com';
+    }
+
+    function isApprovedMember() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && (
+          (
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('account_status', 'pending') == 'approved'
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('payment_status', 'unpaid') == 'verified'
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('dashboard_access', false) == true
+          )
+          || (
+            !('payment_status' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data)
+            && !('dashboard_access' in get(/databases/$(database)/documents/users/$(request.auth.uid)).data)
+            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status in ['Approved', 'active']
+          )
+        );
     }
 
     // 3. Entity Validation Blueprints
@@ -47,21 +61,48 @@ service cloud.firestore {
         'twoFactorEnabled', 'createdAt', 'updatedAt'
       ])
       && data.keys().hasOnly([
-        'uid', 'fullName', 'username', 'country', 'role', 'status',
+        'uid', 'fullName', 'username', 'country', 'role', 'status', 'account_status',
+        'payment_status', 'dashboard_access',
         'isVerified', 'walletBalance', 'totalDeposits', 'totalPurchases',
-        'twoFactorEnabled', 'createdAt', 'updatedAt'
+        'twoFactorEnabled', 'registrationPaymentStatus', 'registrationPaymentId',
+        'registrationTxId', 'registrationCrypto', 'registrationFeeAmount',
+        'registrationReceiptDataUrl', 'registrationReceiptFileName',
+        'registrationSubmittedAt', 'paymentVerifiedAt', 'approvedAt', 'rejectedAt',
+        'rejectionReason', 'adminNotes', 'lastLoginAt', 'createdAt', 'updatedAt'
       ])
       && data.uid is string && data.uid == userId && data.uid.size() <= 128
       && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 100
       && data.username is string && data.username.size() >= 2 && data.username.size() <= 40
       && data.country is string && data.country.size() >= 2 && data.country.size() <= 64
       && data.role is string && data.role in ['customer', 'admin']
-      && data.status is string && data.status in ['active', 'suspended']
+      && data.status is string && data.status in ['Pending Payment', 'Approved', 'Rejected', 'Suspended', 'active', 'suspended']
+      && (!('account_status' in data) || (data.account_status is string && data.account_status in ['pending', 'approved', 'rejected', 'suspended']))
+      && (!('payment_status' in data) || (data.payment_status is string && data.payment_status in ['unpaid', 'pending_verification', 'verified', 'rejected']))
+      && (!('dashboard_access' in data) || data.dashboard_access is bool)
       && data.isVerified is bool
       && (data.walletBalance is int || data.walletBalance is float) && data.walletBalance >= 0
       && (data.totalDeposits is int || data.totalDeposits is float) && data.totalDeposits >= 0
       && (data.totalPurchases is int || data.totalPurchases is float) && data.totalPurchases >= 0
       && data.twoFactorEnabled is bool
+      && (!('registrationPaymentStatus' in data) || (data.registrationPaymentStatus is string && data.registrationPaymentStatus in ['Unpaid', 'Pending Review', 'Approved', 'Rejected']))
+      && (!('registrationPaymentId' in data) || (data.registrationPaymentId is string && data.registrationPaymentId.size() <= 128))
+      && (!('registrationTxId' in data) || (data.registrationTxId is string && data.registrationTxId.size() <= 160))
+      && (!('registrationCrypto' in data) || (data.registrationCrypto is string && data.registrationCrypto in ['BTC', 'ETH', 'USDT_ERC20', 'USDT_TRC20']))
+      && (!('registrationFeeAmount' in data) || ((data.registrationFeeAmount is int || data.registrationFeeAmount is float) && data.registrationFeeAmount >= 0 && data.registrationFeeAmount <= 100000))
+      && (!('registrationReceiptDataUrl' in data) || (
+        data.registrationReceiptDataUrl is string &&
+        data.registrationReceiptDataUrl.size() >= 30 &&
+        data.registrationReceiptDataUrl.size() <= 450000 &&
+        data.registrationReceiptDataUrl.matches('^data:(image/(jpeg|png|webp|gif)|application/pdf);base64,[A-Za-z0-9+/=]+$')
+      ))
+      && (!('registrationReceiptFileName' in data) || (data.registrationReceiptFileName is string && data.registrationReceiptFileName.size() <= 160))
+      && (!('registrationSubmittedAt' in data) || data.registrationSubmittedAt is timestamp)
+      && (!('paymentVerifiedAt' in data) || data.paymentVerifiedAt is timestamp)
+      && (!('approvedAt' in data) || data.approvedAt is timestamp)
+      && (!('rejectedAt' in data) || data.rejectedAt is timestamp)
+      && (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 500))
+      && (!('adminNotes' in data) || (data.adminNotes is string && data.adminNotes.size() <= 1000))
+      && (!('lastLoginAt' in data) || data.lastLoginAt is timestamp)
       && data.createdAt is timestamp
       && data.updatedAt is timestamp;
     }
@@ -76,24 +117,65 @@ service cloud.firestore {
       && data.updatedAt is timestamp;
     }
 
+    function isValidRegistrationPayment(data, paymentId) {
+      return data.keys().hasAll([
+        'id', 'userId', 'userEmail', 'username', 'fullName', 'amount', 'currency',
+        'walletAddress', 'txId', 'receiptDataUrl', 'receiptFileName', 'status',
+        'createdAt', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'userId', 'userEmail', 'username', 'fullName', 'amount', 'currency',
+        'walletAddress', 'txId', 'receiptDataUrl', 'receiptFileName', 'status',
+        'rejectionReason', 'adminNote', 'createdAt', 'updatedAt', 'reviewedAt'
+      ])
+      && data.id is string && data.id == paymentId && data.id.size() <= 128
+      && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128
+      && data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 160
+      && data.username is string && data.username.size() >= 1 && data.username.size() <= 40
+      && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 100
+      && (data.amount is int || data.amount is float) && data.amount >= 5 && data.amount <= 100000
+      && data.currency is string && data.currency in ['BTC', 'ETH', 'USDT_ERC20', 'USDT_TRC20']
+      && data.walletAddress is string && data.walletAddress.size() >= 20 && data.walletAddress.size() <= 128
+      && data.txId is string && data.txId.size() >= 8 && data.txId.size() <= 160
+      && data.receiptDataUrl is string
+      && data.receiptDataUrl.size() >= 30
+      && data.receiptDataUrl.size() <= 450000
+      && data.receiptDataUrl.matches('^data:(image/(jpeg|png|webp|gif)|application/pdf);base64,[A-Za-z0-9+/=]+$')
+      && data.receiptFileName is string && data.receiptFileName.size() >= 1 && data.receiptFileName.size() <= 160
+      && data.status is string && data.status in ['Pending', 'Approved', 'Rejected']
+      && (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 500))
+      && (!('adminNote' in data) || (data.adminNote is string && data.adminNote.size() <= 500))
+      && data.createdAt is timestamp
+      && data.updatedAt is timestamp
+      && (!('reviewedAt' in data) || data.reviewedAt is timestamp);
+    }
+
     function isValidDeposit(data, depositId) {
       return data.keys().hasAll([
         'id', 'userId', 'userEmail', 'username', 'amount', 'currency',
         'walletAddress', 'txHash', 'status', 'createdAt', 'updatedAt'
       ])
       && data.keys().hasOnly([
-        'id', 'userId', 'userEmail', 'username', 'amount', 'currency',
-        'walletAddress', 'txHash', 'receiptDataUrl', 'receiptFileName',
-        'status', 'adminNote', 'createdAt', 'updatedAt'
+        'id', 'userId', 'userEmail', 'username', 'userName', 'amount', 'currency',
+        'walletAddress', 'txHash', 'receiptUrl', 'receiptDataUrl', 'receiptFileName',
+        'status', 'adminNote', 'rejectionReason', 'reviewedBy', 'approvedAt', 'rejectedAt',
+        'createdAt', 'updatedAt'
       ])
       && data.id is string && data.id == depositId && data.id.size() <= 128
       && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128
       && data.userEmail is string && data.userEmail.size() >= 3 && data.userEmail.size() <= 160
       && data.username is string && data.username.size() >= 1 && data.username.size() <= 40
+      && (!('userName' in data) || (data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 100))
       && (data.amount is int || data.amount is float) && data.amount >= 100 && data.amount <= 10000000
       && data.currency is string && data.currency in ['BTC', 'ETH', 'USDT_ERC20', 'USDT_TRC20']
       && data.walletAddress is string && data.walletAddress.size() >= 20 && data.walletAddress.size() <= 128
       && data.txHash is string && data.txHash.size() >= 10 && data.txHash.size() <= 160
+      && (!('receiptUrl' in data) || (
+        data.receiptUrl is string &&
+        data.receiptUrl.size() >= 10 &&
+        data.receiptUrl.size() <= 300 &&
+        data.receiptUrl.matches('^/api/uploads/receipts/[a-zA-Z0-9_\\-]+\\.(png|jpg|jpeg|webp|gif|pdf)$')
+      ))
       && (!('receiptDataUrl' in data) || (
         data.receiptDataUrl is string &&
         data.receiptDataUrl.size() >= 30 &&
@@ -107,6 +189,10 @@ service cloud.firestore {
       ))
       && data.status is string && data.status in ['Pending', 'Approved', 'Rejected']
       && (!('adminNote' in data) || (data.adminNote is string && data.adminNote.size() <= 300))
+      && (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 500))
+      && (!('reviewedBy' in data) || (data.reviewedBy is string && data.reviewedBy.size() <= 160))
+      && (!('approvedAt' in data) || data.approvedAt is timestamp)
+      && (!('rejectedAt' in data) || data.rejectedAt is timestamp)
       && data.createdAt is timestamp
       && data.updatedAt is timestamp;
     }
@@ -173,13 +259,20 @@ service cloud.firestore {
       && data.recipientEmail is string && data.recipientEmail.size() >= 3 && data.recipientEmail.size() <= 160
       && data.subject is string && data.subject in [
         'Welcome to BlueWhale Markethub',
+        'Registration Payment Submitted',
+        'Registration Payment Verified',
+        'Account Profile Approved',
+        'Account Approved & Activated',
+        'Registration Payment Rejected',
+        'Account Suspended',
         'Deposit Successfully Added',
+        'Deposit Rejected',
         'Service Purchase Completed',
         'Reset Your Password',
         'Price Drop Alert Triggered'
       ]
       && data.body is string && data.body.size() >= 1 && data.body.size() <= 1000
-      && data.category is string && data.category in ['registration', 'deposit', 'purchase', 'security', 'price_alert']
+      && data.category is string && data.category in ['registration', 'registration_payment', 'deposit', 'purchase', 'security', 'price_alert']
       && data.read is bool
       && data.createdAt is timestamp;
     }
@@ -286,6 +379,47 @@ service cloud.firestore {
       && (!('triggeredAt' in data) || data.triggeredAt is timestamp);
     }
 
+    function isValidAdminLog(data, logId) {
+      return data.keys().hasAll([
+        'id', 'adminUid', 'adminEmail', 'action', 'details', 'createdAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'adminUid', 'adminEmail', 'action', 'targetUserId',
+        'targetEmail', 'targetUsername', 'previousStatus', 'newStatus',
+        'details', 'createdAt'
+      ])
+      && data.id is string && data.id == logId && data.id.size() <= 128
+      && data.adminUid is string && data.adminUid.size() >= 1 && data.adminUid.size() <= 128
+      && data.adminEmail is string && data.adminEmail.size() >= 3 && data.adminEmail.size() <= 160
+      && data.action is string && data.action.size() >= 2 && data.action.size() <= 80
+      && (!('targetUserId' in data) || (data.targetUserId is string && data.targetUserId.size() <= 128))
+      && (!('targetEmail' in data) || (data.targetEmail is string && data.targetEmail.size() <= 160))
+      && (!('targetUsername' in data) || (data.targetUsername is string && data.targetUsername.size() <= 64))
+      && (!('previousStatus' in data) || (data.previousStatus is string && data.previousStatus.size() <= 64))
+      && (!('newStatus' in data) || (data.newStatus is string && data.newStatus.size() <= 64))
+      && data.details is string && data.details.size() >= 1 && data.details.size() <= 600
+      && data.createdAt is timestamp;
+    }
+
+    function isValidSiteSettings(data, settingId) {
+      return data.keys().hasAll([
+        'id', 'registrationFeeUsd', 'minimumDepositUsd', 'supportEmail',
+        'marketplaceNotice', 'requireRegistrationApproval', 'updatedBy', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'id', 'registrationFeeUsd', 'minimumDepositUsd', 'supportEmail',
+        'marketplaceNotice', 'requireRegistrationApproval', 'updatedBy', 'updatedAt'
+      ])
+      && data.id is string && data.id == settingId && data.id.size() <= 64
+      && (data.registrationFeeUsd is int || data.registrationFeeUsd is float) && data.registrationFeeUsd >= 0 && data.registrationFeeUsd <= 1000
+      && (data.minimumDepositUsd is int || data.minimumDepositUsd is float) && data.minimumDepositUsd >= 10 && data.minimumDepositUsd <= 10000
+      && data.supportEmail is string && data.supportEmail.size() >= 3 && data.supportEmail.size() <= 160
+      && data.marketplaceNotice is string && data.marketplaceNotice.size() <= 300
+      && data.requireRegistrationApproval is bool
+      && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128
+      && data.updatedAt is timestamp;
+    }
+
     // 4. Collection Match Blocks
     match /admins/{adminId} {
       allow get: if isValidId(adminId) && (isOwner(adminId) || isAdmin());
@@ -296,20 +430,29 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if isAdmin();
-      allow create: if isVerifiedEmail()
+      allow create: if isSignedIn()
         && isValidId(userId)
         && isOwner(userId)
         && isValidUserAccount(incoming(), userId)
         && (incoming().role == 'customer' || isAdmin())
         && (incoming().isVerified == false || isAdmin())
-        && incoming().status == 'active'
+        && (incoming().status == 'Pending Payment' || (isAdmin() && incoming().status == 'Approved'))
+        && (!('account_status' in incoming()) || incoming().account_status == 'pending' || (isAdmin() && incoming().account_status == 'approved'))
+        && (!('payment_status' in incoming()) || incoming().payment_status == 'unpaid' || (isAdmin() && incoming().payment_status == 'verified'))
+        && (!('dashboard_access' in incoming()) || incoming().dashboard_access == false || isAdmin())
+        && (!('registrationPaymentStatus' in incoming()) || incoming().registrationPaymentStatus == 'Unpaid' || (isAdmin() && incoming().registrationPaymentStatus == 'Approved'))
+        && !('paymentVerifiedAt' in incoming())
+        && !('approvedAt' in incoming())
+        && !('rejectedAt' in incoming())
+        && !('rejectionReason' in incoming())
+        && !('adminNotes' in incoming())
         && incoming().walletBalance == 0
         && incoming().totalDeposits == 0
         && incoming().totalPurchases == 0
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
-      allow update: if isVerifiedEmail()
+      allow update: if isSignedIn()
         && isValidId(userId)
         && isValidUserAccount(incoming(), userId)
         && incoming().uid == existing().uid
@@ -319,39 +462,61 @@ service cloud.firestore {
           (
             isAdmin() &&
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'status', 'isVerified', 'role', 'walletBalance', 'totalDeposits', 'updatedAt'
-            ])
+              'status', 'account_status', 'payment_status', 'dashboard_access',
+              'isVerified', 'role', 'walletBalance', 'totalDeposits',
+              'registrationPaymentStatus', 'paymentVerifiedAt', 'approvedAt', 'rejectedAt',
+              'rejectionReason', 'adminNotes', 'lastLoginAt', 'updatedAt'
+            ]) &&
+            (!('lastLoginAt' in incoming().diff(existing()).affectedKeys()) || incoming().lastLoginAt == request.time)
           ) ||
           (
             isOwner(userId) &&
-            existing().status == 'active' &&
+            isApprovedMember() &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'fullName', 'username', 'country', 'twoFactorEnabled', 'updatedAt'
             ])
           ) ||
           (
             isOwner(userId) &&
-            existing().status == 'active' &&
+            isApprovedMember() &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'walletBalance', 'totalPurchases', 'updatedAt'
             ]) &&
             incoming().walletBalance < existing().walletBalance &&
             incoming().walletBalance >= 0 &&
             incoming().totalPurchases > existing().totalPurchases
+          ) ||
+          (
+            isOwner(userId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['lastLoginAt', 'updatedAt']) &&
+            incoming().lastLoginAt == request.time
+          ) ||
+          (
+            isOwner(userId) &&
+            existing().get('account_status', 'pending') != 'suspended' &&
+            existing().get('payment_status', 'unpaid') in ['unpaid', 'rejected', 'pending_verification'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'payment_status', 'registrationPaymentStatus', 'registrationPaymentId', 'registrationTxId',
+              'registrationCrypto', 'registrationFeeAmount', 'registrationReceiptDataUrl',
+              'registrationReceiptFileName', 'registrationSubmittedAt', 'updatedAt'
+            ]) &&
+            incoming().get('payment_status', 'pending_verification') == 'pending_verification' &&
+            incoming().registrationPaymentStatus == 'Pending Review' &&
+            incoming().registrationFeeAmount >= 10
           )
         );
-      allow delete: if false;
+      allow delete: if isAdmin() && isValidId(userId) && userId != request.auth.uid;
 
       match /private/{docId} {
         allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
         allow list: if isValidId(userId) && (isOwner(userId) || isAdmin());
-        allow create: if isVerifiedEmail()
+        allow create: if isSignedIn()
           && isValidId(userId)
           && isValidId(docId)
           && isOwner(userId)
           && isValidUserPrivateInfo(incoming(), userId)
           && incoming().updatedAt == request.time;
-        allow update: if isVerifiedEmail()
+        allow update: if isSignedIn()
           && isValidId(userId)
           && isValidId(docId)
           && isOwner(userId)
@@ -361,20 +526,52 @@ service cloud.firestore {
           && incoming().diff(existing()).affectedKeys().hasOnly([
             'email', 'phoneNumber', 'lastLoginIp', 'updatedAt'
           ]);
-        allow delete: if false;
+        allow delete: if isAdmin() && isValidId(userId) && isValidId(docId) && userId != request.auth.uid;
       }
+    }
+
+    match /registrationPayments/{paymentId} {
+      allow get: if isValidId(paymentId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn()
+        && isValidId(paymentId)
+        && isValidRegistrationPayment(incoming(), paymentId)
+        && incoming().userId == request.auth.uid
+        && incoming().amount >= 10
+        && incoming().status == 'Pending'
+        && !('rejectionReason' in incoming())
+        && !('adminNote' in incoming())
+        && !('reviewedAt' in incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(paymentId)
+        && isValidRegistrationPayment(incoming(), paymentId)
+        && existing().status == 'Pending'
+        && incoming().status in ['Approved', 'Rejected']
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'rejectionReason', 'adminNote', 'reviewedAt', 'updatedAt'
+        ]);
+      allow delete: if false;
     }
 
     match /deposits/{depositId} {
       allow get: if isValidId(depositId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isVerifiedEmail()
+      allow create: if (isApprovedMember() || isAdmin())
         && isValidId(depositId)
         && isValidDeposit(incoming(), depositId)
-        && 'receiptDataUrl' in incoming()
+        && ('receiptUrl' in incoming() || 'receiptDataUrl' in incoming())
         && 'receiptFileName' in incoming()
         && incoming().userId == request.auth.uid
         && incoming().status == 'Pending'
+        && !('approvedAt' in incoming())
+        && !('rejectedAt' in incoming())
+        && !('rejectionReason' in incoming())
+        && !('reviewedBy' in incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isAdmin()
@@ -385,14 +582,16 @@ service cloud.firestore {
         && incoming().userId == existing().userId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminNote', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'adminNote', 'rejectionReason', 'approvedAt', 'rejectedAt', 'reviewedBy', 'updatedAt'
+        ]);
       allow delete: if false;
     }
 
     match /orders/{orderId} {
       allow get: if isValidId(orderId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isVerifiedEmail()
+      allow create: if (isApprovedMember() || isAdmin())
         && isValidId(orderId)
         && isValidOrder(incoming(), orderId)
         && incoming().userId == request.auth.uid
@@ -416,7 +615,7 @@ service cloud.firestore {
     match /transactions/{txId} {
       allow get: if isValidId(txId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isVerifiedEmail()
+      allow create: if (isApprovedMember() || isAdmin())
         && isValidId(txId)
         && isValidTransaction(incoming(), txId)
         && incoming().createdAt == request.time
@@ -442,12 +641,12 @@ service cloud.firestore {
     match /notifications/{notifId} {
       allow get: if isValidId(notifId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isVerifiedEmail()
+      allow create: if isSignedIn()
         && isValidId(notifId)
         && isValidNotification(incoming(), notifId)
         && (incoming().userId == request.auth.uid || isAdmin())
         && incoming().createdAt == request.time;
-      allow update: if isVerifiedEmail()
+      allow update: if isSignedIn()
         && isValidId(notifId)
         && isValidNotification(incoming(), notifId)
         && existing().userId == request.auth.uid
@@ -460,7 +659,7 @@ service cloud.firestore {
     match /loginLogs/{logId} {
       allow get: if isValidId(logId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isVerifiedEmail()
+      allow create: if isSignedIn()
         && isValidId(logId)
         && isValidLoginLog(incoming(), logId)
         && incoming().userId == request.auth.uid
@@ -471,14 +670,14 @@ service cloud.firestore {
     match /supportTickets/{ticketId} {
       allow get: if isValidId(ticketId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isVerifiedEmail()
+      allow create: if (isApprovedMember() || isAdmin())
         && isValidId(ticketId)
         && isValidSupportTicket(incoming(), ticketId)
         && incoming().userId == request.auth.uid
         && incoming().status == 'Open'
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerifiedEmail()
+      allow update: if (isApprovedMember() || isAdmin())
         && isValidId(ticketId)
         && isValidSupportTicket(incoming(), ticketId)
         && incoming().userId == existing().userId
@@ -497,7 +696,7 @@ service cloud.firestore {
         allow list: if isValidId(ticketId) && isSignedIn() && (
           resource.data.ticketOwnerId == request.auth.uid || isAdmin()
         );
-        allow create: if isVerifiedEmail()
+        allow create: if (isApprovedMember() || isAdmin())
           && isValidId(ticketId)
           && isValidId(msgId)
           && isValidSupportMessage(incoming(), msgId, ticketId)
@@ -527,7 +726,7 @@ service cloud.firestore {
     match /priceAlerts/{alertId} {
       allow get: if isValidId(alertId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
       allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
-      allow create: if isVerifiedEmail()
+      allow create: if (isApprovedMember() || isAdmin())
         && isValidId(alertId)
         && isValidPriceAlert(incoming(), alertId)
         && incoming().userId == request.auth.uid
@@ -536,7 +735,7 @@ service cloud.firestore {
         && !('triggeredAt' in incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
-      allow update: if isVerifiedEmail()
+      allow update: if (isApprovedMember() || isAdmin())
         && isValidId(alertId)
         && isValidPriceAlert(incoming(), alertId)
         && incoming().userId == existing().userId
@@ -561,7 +760,27 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'triggeredPrice', 'triggeredAt', 'updatedAt'])
           )
         );
-      allow delete: if isValidId(alertId) && isVerifiedEmail() && (existing().userId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(alertId) && (isApprovedMember() || isAdmin()) && (existing().userId == request.auth.uid || isAdmin());
+    }
+
+    match /adminLogs/{logId} {
+      allow get, list: if isAdmin();
+      allow create: if isAdmin()
+        && isValidId(logId)
+        && isValidAdminLog(incoming(), logId)
+        && incoming().adminUid == request.auth.uid
+        && incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /siteSettings/{settingId} {
+      allow get, list: if isValidId(settingId);
+      allow create, update: if isAdmin()
+        && isValidId(settingId)
+        && isValidSiteSettings(incoming(), settingId)
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
     }
   }
 }

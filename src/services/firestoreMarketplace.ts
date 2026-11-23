@@ -22,17 +22,30 @@ import {
   type ShippingServiceItem,
   type SupportedCountry,
 } from '../data/shippingCatalog';
-import type {
-  DepositRecord,
-  EmailNotification,
-  LoginActivity,
-  PriceAlert,
-  ServicePriceOverride,
-  ShippingOrder,
-  SupportMessage,
-  SupportTicket,
-  UserAccount,
-  WalletTransaction,
+import {
+  ADMIN_EMAIL,
+  getActivationBlockedMessage,
+  getPaymentStatus,
+  getSimpleAccountStatus,
+  hasDashboardAccess,
+  REGISTRATION_FEE_USD,
+  SUPPORT_EMAIL,
+  type AccountStatus,
+  type AdminLogEntry,
+  type DepositRecord,
+  type EmailNotification,
+  type LoginActivity,
+  type PaymentStatus,
+  type PriceAlert,
+  type RegistrationPayment,
+  type ServicePriceOverride,
+  type ShippingOrder,
+  type SimpleAccountStatus,
+  type SupportMessage,
+  type SupportTicket,
+  type UserAccount,
+  type WalletTransaction,
+  type WebsiteSettings,
 } from '../types/marketplace';
 
 export function makeSafeId(prefix: string): string {
@@ -54,6 +67,101 @@ export function tsToIso(val: unknown): string {
   return new Date().toISOString();
 }
 
+export function mapFirestoreUserAccount(
+  data: Record<string, unknown>,
+  privateData?: { email?: string; phoneNumber?: string } | null,
+): UserAccount {
+  const email = String(privateData?.email || data.email || '');
+  const role = (data.role as UserAccount['role']) || 'customer';
+  const status = (data.status as AccountStatus) || 'Pending Payment';
+  const rawAccountStatus = data.account_status as SimpleAccountStatus | undefined;
+  const rawPaymentStatus = data.payment_status as PaymentStatus | undefined;
+  const registrationPaymentStatus =
+    data.registrationPaymentStatus as UserAccount['registrationPaymentStatus'];
+  const account_status = getSimpleAccountStatus({
+    role,
+    email,
+    status,
+    account_status: rawAccountStatus,
+  });
+  const payment_status = getPaymentStatus({
+    role,
+    email,
+    status,
+    account_status: rawAccountStatus,
+    payment_status: rawPaymentStatus,
+    registrationPaymentStatus,
+  });
+  const dashboard_access =
+    typeof data.dashboard_access === 'boolean'
+      ? data.dashboard_access && account_status === 'approved' && payment_status === 'verified'
+      : hasDashboardAccess({
+          role,
+          email,
+          status,
+          account_status,
+          payment_status,
+          registrationPaymentStatus,
+        });
+  return {
+    uid: String(data.uid || ''),
+    fullName: String(data.fullName || ''),
+    username: String(data.username || ''),
+    email,
+    phoneNumber: String(privateData?.phoneNumber || data.phoneNumber || ''),
+    country: String(data.country || 'United States'),
+    role,
+    status,
+    account_status,
+    payment_status,
+    dashboard_access,
+    isVerified: Boolean(data.isVerified),
+    walletBalance: Number(data.walletBalance || 0),
+    totalDeposits: Number(data.totalDeposits || 0),
+    totalPurchases: Number(data.totalPurchases || 0),
+    twoFactorEnabled: Boolean(data.twoFactorEnabled),
+    registrationPaymentStatus,
+    registrationPaymentId: data.registrationPaymentId ? String(data.registrationPaymentId) : undefined,
+    registrationTxId: data.registrationTxId ? String(data.registrationTxId) : undefined,
+    registrationCrypto: data.registrationCrypto as UserAccount['registrationCrypto'],
+    registrationFeeAmount:
+      typeof data.registrationFeeAmount === 'number' ? Number(data.registrationFeeAmount) : undefined,
+    registrationReceiptDataUrl: data.registrationReceiptDataUrl
+      ? String(data.registrationReceiptDataUrl)
+      : undefined,
+    registrationReceiptFileName: data.registrationReceiptFileName
+      ? String(data.registrationReceiptFileName)
+      : undefined,
+    registrationSubmittedAt: data.registrationSubmittedAt
+      ? tsToIso(data.registrationSubmittedAt)
+      : undefined,
+    paymentVerifiedAt: data.paymentVerifiedAt ? tsToIso(data.paymentVerifiedAt) : undefined,
+    approvedAt: data.approvedAt ? tsToIso(data.approvedAt) : undefined,
+    rejectedAt: data.rejectedAt ? tsToIso(data.rejectedAt) : undefined,
+    rejectionReason: data.rejectionReason ? String(data.rejectionReason) : undefined,
+    adminNotes: data.adminNotes ? String(data.adminNotes) : undefined,
+    lastLoginAt: data.lastLoginAt ? tsToIso(data.lastLoginAt) : undefined,
+    createdAt: tsToIso(data.createdAt),
+    updatedAt: tsToIso(data.updatedAt),
+  };
+}
+
+export async function fetchFirebaseUserPrivateInfo(
+  uid: string,
+): Promise<{ email: string; phoneNumber: string } | null> {
+  try {
+    const snap = await getDoc(doc(db, 'users', uid, 'private', 'info'));
+    if (!snap.exists()) return null;
+    const d = snap.data();
+    return {
+      email: String(d.email || ''),
+      phoneNumber: String(d.phoneNumber || ''),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function ensureFirebaseUserProfile(params: {
   uid: string;
   email: string;
@@ -70,7 +178,7 @@ export async function ensureFirebaseUserProfile(params: {
 
   try {
     const snap = await getDoc(userRef);
-    const isAdminEmail = params.email.toLowerCase() === 'johnblessing9977@gmail.com';
+    const isAdminEmail = params.email.trim().toLowerCase() === ADMIN_EMAIL;
 
     if (!snap.exists()) {
       const batch = writeBatch(db);
@@ -85,12 +193,17 @@ export async function ensureFirebaseUserProfile(params: {
         username: cleanUsername,
         country: params.country || 'United States',
         role: isAdminEmail ? 'admin' : 'customer',
-        status: 'active',
+        status: isAdminEmail ? 'Approved' : 'Pending Payment',
+        account_status: isAdminEmail ? 'approved' : 'pending',
+        payment_status: isAdminEmail ? 'verified' : 'unpaid',
+        dashboard_access: isAdminEmail,
         isVerified: isAdminEmail,
         walletBalance: 0,
         totalDeposits: 0,
         totalPurchases: 0,
         twoFactorEnabled: false,
+        registrationPaymentStatus: isAdminEmail ? 'Approved' : 'Unpaid',
+        lastLoginAt: serverTimestamp(),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -109,7 +222,9 @@ export async function ensureFirebaseUserProfile(params: {
         userId: params.uid,
         recipientEmail: params.email.slice(0, 160),
         subject: 'Welcome to BlueWhale Markethub',
-        body: `Welcome ${cleanName}! Your BlueWhale Markethub workspace is active for ${params.country || 'United States'}. You can fund your wallet via BTC, ETH, or USDT and purchase verified Personal, Business, and Corporate accounts worldwide.`,
+        body: isAdminEmail
+          ? `Welcome ${cleanName}! Your administrator workspace is active.`
+          : `Welcome ${cleanName}! Your account has been submitted for review and approval by our administration team. You will be able to log in once your account has been approved.`,
         category: 'registration',
         read: false,
         createdAt: serverTimestamp(),
@@ -129,24 +244,10 @@ export async function ensureFirebaseUserProfile(params: {
       await batch.commit();
 
       const fresh = await getDoc(userRef);
-      const data = fresh.data()!;
-      return {
-        uid: data.uid,
-        fullName: data.fullName,
-        username: data.username,
+      return mapFirestoreUserAccount(fresh.data()!, {
         email: params.email,
         phoneNumber: params.phoneNumber || '+1-555-0100',
-        country: data.country,
-        role: data.role,
-        status: data.status,
-        isVerified: data.isVerified,
-        walletBalance: Number(data.walletBalance || 0),
-        totalDeposits: Number(data.totalDeposits || 0),
-        totalPurchases: Number(data.totalPurchases || 0),
-        twoFactorEnabled: Boolean(data.twoFactorEnabled),
-        createdAt: tsToIso(data.createdAt),
-        updatedAt: tsToIso(data.updatedAt),
-      };
+      });
     }
 
     const data = snap.data();
@@ -178,35 +279,36 @@ export async function ensureFirebaseUserProfile(params: {
       createdAt: serverTimestamp(),
     });
 
-    let resolvedRole = data.role;
-    let resolvedVerified = Boolean(data.isVerified);
-    if (isAdminEmail && (resolvedRole !== 'admin' || !resolvedVerified)) {
-      await updateDoc(userRef, {
-        role: 'admin',
-        isVerified: true,
-        updatedAt: serverTimestamp(),
-      });
-      resolvedRole = 'admin';
-      resolvedVerified = true;
-    }
-
-    return {
-      uid: data.uid,
-      fullName: data.fullName,
-      username: data.username,
-      email,
-      phoneNumber,
-      country: data.country,
-      role: resolvedRole,
-      status: data.status,
-      isVerified: resolvedVerified,
-      walletBalance: Number(data.walletBalance || 0),
-      totalDeposits: Number(data.totalDeposits || 0),
-      totalPurchases: Number(data.totalPurchases || 0),
-      twoFactorEnabled: Boolean(data.twoFactorEnabled),
-      createdAt: tsToIso(data.createdAt),
-      updatedAt: tsToIso(data.updatedAt),
+    const userUpdatePayload: Record<string, unknown> = {
+      lastLoginAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
     };
+    if (
+      isAdminEmail &&
+      (data.role !== 'admin' ||
+        !data.isVerified ||
+        data.status !== 'Approved' ||
+        data.account_status !== 'approved' ||
+        data.payment_status !== 'verified' ||
+        data.dashboard_access !== true)
+    ) {
+      userUpdatePayload.role = 'admin';
+      userUpdatePayload.status = 'Approved';
+      userUpdatePayload.account_status = 'approved';
+      userUpdatePayload.payment_status = 'verified';
+      userUpdatePayload.dashboard_access = true;
+      userUpdatePayload.isVerified = true;
+      data.role = 'admin';
+      data.status = 'Approved';
+      data.account_status = 'approved';
+      data.payment_status = 'verified';
+      data.dashboard_access = true;
+      data.isVerified = true;
+    }
+    await updateDoc(userRef, userUpdatePayload);
+    data.lastLoginAt = new Date().toISOString();
+
+    return mapFirestoreUserAccount(data, { email, phoneNumber });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${params.uid}`);
   }
@@ -245,6 +347,8 @@ export async function updateFirebaseProfile(
 
 const SAFE_RECEIPT_DATA_URL_RE =
   /^data:(image\/(jpeg|png|webp|gif)|application\/pdf);base64,[A-Za-z0-9+/=]+$/;
+const SAFE_RECEIPT_UPLOAD_URL_RE =
+  /^\/api\/uploads\/receipts\/[a-zA-Z0-9_\-]+\.(png|jpg|jpeg|webp|gif|pdf)$/;
 
 export async function submitFirebaseDeposit(params: {
   user: UserAccount;
@@ -252,17 +356,22 @@ export async function submitFirebaseDeposit(params: {
   currency: CryptoCurrencyCode;
   walletAddress: string;
   txHash: string;
-  receiptDataUrl: string;
+  receiptUrl?: string;
+  receiptDataUrl?: string;
   receiptFileName: string;
 }): Promise<string> {
-  const cleanReceiptUrl = params.receiptDataUrl.trim();
+  const cleanStoredUrl = (params.receiptUrl || '').trim();
+  const cleanDataUrl = (params.receiptDataUrl || '').trim();
   const cleanReceiptName = params.receiptFileName.trim().slice(0, 160);
-  if (
-    cleanReceiptUrl.length < 30 ||
-    cleanReceiptUrl.length > 450000 ||
-    !SAFE_RECEIPT_DATA_URL_RE.test(cleanReceiptUrl)
-  ) {
-    throw new Error('Please upload a valid payment receipt (JPG, PNG, WEBP, GIF, or PDF up to 320 KB).');
+
+  const hasValidStoredUrl = SAFE_RECEIPT_UPLOAD_URL_RE.test(cleanStoredUrl);
+  const hasValidDataUrl =
+    cleanDataUrl.length >= 30 &&
+    cleanDataUrl.length <= 450000 &&
+    SAFE_RECEIPT_DATA_URL_RE.test(cleanDataUrl);
+
+  if (!hasValidStoredUrl && !hasValidDataUrl) {
+    throw new Error('Please upload a valid payment receipt (JPG, PNG, WEBP, GIF, or PDF).');
   }
   if (!cleanReceiptName) {
     throw new Error('Payment receipt file name is required.');
@@ -277,11 +386,13 @@ export async function submitFirebaseDeposit(params: {
       userId: params.user.uid,
       userEmail: params.user.email.slice(0, 160),
       username: params.user.username.slice(0, 40),
-      amount: params.amount,
+      userName: (params.user.fullName || params.user.username).slice(0, 100),
+      amount: Number(params.amount.toFixed(2)),
       currency: params.currency,
       walletAddress: params.walletAddress,
       txHash: params.txHash.trim().slice(0, 160),
-      receiptDataUrl: cleanReceiptUrl,
+      ...(hasValidStoredUrl ? { receiptUrl: cleanStoredUrl } : {}),
+      ...(hasValidDataUrl ? { receiptDataUrl: cleanDataUrl } : {}),
       receiptFileName: cleanReceiptName,
       status: 'Pending',
       createdAt: serverTimestamp(),
@@ -292,7 +403,7 @@ export async function submitFirebaseDeposit(params: {
       id: txId,
       userId: params.user.uid,
       type: 'deposit',
-      amount: params.amount,
+      amount: Number(params.amount.toFixed(2)),
       direction: 'credit',
       referenceId: depId,
       description: `${params.currency} Deposit (${params.txHash.trim().slice(0, 12)}...)`,
@@ -332,8 +443,12 @@ export async function purchaseFirebaseService(params: {
         throw new Error('Account record not found.');
       }
       const userData = userSnap.data();
-      if (userData.status === 'suspended') {
-        throw new Error('Your account is currently suspended.');
+      const mapped = mapFirestoreUserAccount(userData, { email: params.user.email });
+      if (!hasDashboardAccess(mapped)) {
+        throw new Error(
+          getActivationBlockedMessage(mapped) ||
+            'Your registration payment is currently awaiting administrator approval.',
+        );
       }
       const overrideData = pricingSnap.exists()
         ? {
@@ -422,6 +537,8 @@ export async function adminReviewFirebaseDeposit(params: {
   deposit: DepositRecord;
   decision: 'Approved' | 'Rejected';
   adminNote: string;
+  rejectionReason?: string;
+  adminUser?: { uid: string; email: string };
 }): Promise<void> {
   try {
     const txSnap = await getDocs(
@@ -441,9 +558,21 @@ export async function adminReviewFirebaseDeposit(params: {
         throw new Error('Target user account not found.');
       }
 
+      const reasonText = (
+        params.rejectionReason ||
+        params.adminNote ||
+        'Payment receipt or transaction hash could not be verified.'
+      )
+        .trim()
+        .slice(0, 400);
+
       transaction.update(depRef, {
         status: params.decision,
-        adminNote: params.adminNote.slice(0, 300),
+        adminNote: (params.decision === 'Rejected' ? params.adminNote || reasonText : params.adminNote).slice(0, 300),
+        ...(params.adminUser?.email ? { reviewedBy: params.adminUser.email.slice(0, 160) } : {}),
+        ...(params.decision === 'Approved'
+          ? { approvedAt: serverTimestamp() }
+          : { rejectedAt: serverTimestamp(), rejectionReason: reasonText }),
         updatedAt: serverTimestamp(),
       });
 
@@ -453,9 +582,9 @@ export async function adminReviewFirebaseDeposit(params: {
         });
       });
 
+      const approvedAmount = Number(depSnap.data().amount ?? params.deposit.amount);
       if (params.decision === 'Approved') {
         const userData = targetUserSnap.data();
-        const approvedAmount = Number(depSnap.data().amount ?? params.deposit.amount);
         const newBal = Number((Number(userData.walletBalance || 0) + approvedAmount).toFixed(2));
         const newTotalDep = Number((Number(userData.totalDeposits || 0) + approvedAmount).toFixed(2));
 
@@ -471,9 +600,38 @@ export async function adminReviewFirebaseDeposit(params: {
           userId: params.deposit.userId,
           recipientEmail: params.deposit.userEmail,
           subject: 'Deposit Successfully Added',
-          body: `Your ${params.deposit.currency} deposit of $${approvedAmount.toFixed(2)} (Tx: ${params.deposit.txHash.slice(0, 14)}...) has been approved and added to your BlueWhale Markethub wallet.`,
+          body: `Your deposit has been approved and funds have been credited to your wallet. ($${approvedAmount.toFixed(2)} ${params.deposit.currency.replace('_', ' ')}, TXID: ${params.deposit.txHash.slice(0, 14)}...)`,
           category: 'deposit',
           read: false,
+          createdAt: serverTimestamp(),
+        });
+      } else {
+        const notifId = makeSafeId('notif');
+        transaction.set(doc(db, 'notifications', notifId), {
+          id: notifId,
+          userId: params.deposit.userId,
+          recipientEmail: params.deposit.userEmail,
+          subject: 'Deposit Rejected',
+          body: `Your deposit has been rejected. Please review the reason provided by support. Reason: ${reasonText}`,
+          category: 'deposit',
+          read: false,
+          createdAt: serverTimestamp(),
+        });
+      }
+
+      if (params.adminUser) {
+        const adminLogId = makeSafeId('alog');
+        transaction.set(doc(db, 'adminLogs', adminLogId), {
+          id: adminLogId,
+          adminUid: params.adminUser.uid,
+          adminEmail: params.adminUser.email.slice(0, 160),
+          action: params.decision === 'Approved' ? 'DEPOSIT_APPROVED' : 'DEPOSIT_REJECTED',
+          targetUserId: params.deposit.userId,
+          targetEmail: params.deposit.userEmail.slice(0, 160),
+          targetUsername: params.deposit.username.slice(0, 64),
+          previousStatus: 'Pending',
+          newStatus: params.decision,
+          details: `${params.decision} $${approvedAmount.toFixed(2)} ${params.deposit.currency} deposit (${params.deposit.txHash.slice(0, 16)}...)${params.decision === 'Rejected' ? ` — Reason: ${reasonText}` : ''}`,
           createdAt: serverTimestamp(),
         });
       }
@@ -486,6 +644,7 @@ export async function adminReviewFirebaseDeposit(params: {
 export async function adminUpdateFirebaseOrder(params: {
   order: ShippingOrder;
   action: 'Processing' | 'Completed' | 'Cancelled';
+  adminUser?: { uid: string; email: string };
 }): Promise<void> {
   try {
     await runTransaction(db, async (transaction) => {
@@ -494,6 +653,7 @@ export async function adminUpdateFirebaseOrder(params: {
       if (!orderSnap.exists() || !['Pending', 'Processing'].includes(orderSnap.data().status)) {
         throw new Error('Order is not in Pending or Processing state.');
       }
+      const prevStatus = String(orderSnap.data().status);
 
       if (params.action === 'Completed' || params.action === 'Processing') {
         transaction.update(orderRef, {
@@ -528,23 +688,692 @@ export async function adminUpdateFirebaseOrder(params: {
           createdAt: serverTimestamp(),
         });
       }
+
+      if (params.adminUser) {
+        const adminLogId = makeSafeId('alog');
+        transaction.set(doc(db, 'adminLogs', adminLogId), {
+          id: adminLogId,
+          adminUid: params.adminUser.uid,
+          adminEmail: params.adminUser.email.slice(0, 160),
+          action: params.action === 'Cancelled' ? 'ORDER_REFUNDED' : 'ORDER_STATUS_UPDATED',
+          targetUserId: params.order.userId,
+          targetEmail: params.order.userEmail.slice(0, 160),
+          targetUsername: params.order.username.slice(0, 64),
+          previousStatus: prevStatus,
+          newStatus: params.action === 'Cancelled' ? 'Refunded' : params.action,
+          details: `Order ${params.order.trackingCode} (${params.order.serviceName}) set to ${params.action === 'Cancelled' ? 'Refunded' : params.action}`,
+          createdAt: serverTimestamp(),
+        });
+      }
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `orders/${params.order.id}`);
   }
 }
 
-export async function adminUpdateFirebaseUser(
-  uid: string,
-  updates: { status?: 'active' | 'suspended'; isVerified?: boolean },
-): Promise<void> {
+export async function submitFirebaseRegistrationPayment(params: {
+  user: UserAccount;
+  amount: number;
+  currency: CryptoCurrencyCode;
+  walletAddress: string;
+  txId: string;
+  receiptDataUrl: string;
+  receiptFileName: string;
+}): Promise<string> {
+  const cleanAmount = Number(params.amount);
+  const cleanTxId = params.txId.trim().slice(0, 160);
+  const cleanReceiptUrl = params.receiptDataUrl.trim();
+  const cleanReceiptName = params.receiptFileName.trim().slice(0, 160);
+
+  if (Number.isNaN(cleanAmount) || cleanAmount < REGISTRATION_FEE_USD) {
+    throw new Error(`Minimum registration payment is $${REGISTRATION_FEE_USD.toFixed(2)} USD.`);
+  }
+  if (cleanTxId.length < 8) {
+    throw new Error('Please enter a valid Transaction ID (TXID).');
+  }
+  if (
+    cleanReceiptUrl.length < 30 ||
+    cleanReceiptUrl.length > 450000 ||
+    !SAFE_RECEIPT_DATA_URL_RE.test(cleanReceiptUrl)
+  ) {
+    throw new Error('Please upload a valid payment screenshot (JPG, PNG, WEBP, GIF, or PDF up to 320 KB).');
+  }
+  if (!cleanReceiptName) {
+    throw new Error('Payment screenshot filename is required.');
+  }
+
+  const paymentId = makeSafeId('regpay');
+  const notifId = makeSafeId('notif');
   try {
-    await updateDoc(doc(db, 'users', uid), {
-      ...updates,
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'registrationPayments', paymentId), {
+      id: paymentId,
+      userId: params.user.uid,
+      userEmail: params.user.email.slice(0, 160),
+      username: params.user.username.slice(0, 40),
+      fullName: params.user.fullName.slice(0, 100),
+      amount: cleanAmount,
+      currency: params.currency,
+      walletAddress: params.walletAddress,
+      txId: cleanTxId,
+      receiptDataUrl: cleanReceiptUrl,
+      receiptFileName: cleanReceiptName,
+      status: 'Pending',
+      createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+
+    batch.update(doc(db, 'users', params.user.uid), {
+      payment_status: 'pending_verification',
+      registrationPaymentStatus: 'Pending Review',
+      registrationPaymentId: paymentId,
+      registrationTxId: cleanTxId,
+      registrationCrypto: params.currency,
+      registrationFeeAmount: cleanAmount,
+      registrationReceiptDataUrl: cleanReceiptUrl,
+      registrationReceiptFileName: cleanReceiptName,
+      registrationSubmittedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    batch.set(doc(db, 'notifications', notifId), {
+      id: notifId,
+      userId: params.user.uid,
+      recipientEmail: params.user.email.slice(0, 160),
+      subject: 'Registration Payment Submitted',
+      body: `We received your $${cleanAmount.toFixed(2)} ${params.currency} registration payment (TXID: ${cleanTxId}). Your registration payment is currently awaiting administrator approval.`,
+      category: 'registration_payment',
+      read: false,
+      createdAt: serverTimestamp(),
+    });
+
+    await batch.commit();
+    return paymentId;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `registrationPayments/${paymentId}`);
+  }
+}
+
+export async function adminApproveFirebaseUser(params: {
+  userId: string;
+  userEmail: string;
+  fullName: string;
+  username?: string;
+  adminNotes?: string;
+  adminUser?: { uid: string; email: string };
+}): Promise<{ fullyActivated: boolean }> {
+  let fullyActivated = false;
+  try {
+    await runTransaction(db, async (transaction) => {
+      const userRef = doc(db, 'users', params.userId);
+      const userSnap = await transaction.get(userRef);
+      if (!userSnap.exists()) {
+        throw new Error('User record not found.');
+      }
+      const userData = userSnap.data();
+      const prevAccountStatus = getSimpleAccountStatus({
+        role: userData.role as UserAccount['role'],
+        email: params.userEmail,
+        status: userData.status as AccountStatus,
+        account_status: userData.account_status as SimpleAccountStatus | undefined,
+      });
+      const currentPaymentStatus = getPaymentStatus({
+        role: userData.role as UserAccount['role'],
+        email: params.userEmail,
+        status: userData.status as AccountStatus,
+        account_status: userData.account_status as SimpleAccountStatus | undefined,
+        payment_status: userData.payment_status as PaymentStatus | undefined,
+        registrationPaymentStatus: userData.registrationPaymentStatus as UserAccount['registrationPaymentStatus'],
+      });
+
+      fullyActivated = currentPaymentStatus === 'verified';
+      const userUpdates: Record<string, unknown> = {
+        account_status: 'approved',
+        payment_status: currentPaymentStatus,
+        dashboard_access: fullyActivated,
+        status: fullyActivated ? 'Approved' : 'Pending Payment',
+        isVerified: fullyActivated,
+        approvedAt: serverTimestamp(),
+        rejectionReason: '',
+        updatedAt: serverTimestamp(),
+      };
+      if (typeof params.adminNotes === 'string') {
+        userUpdates.adminNotes = params.adminNotes.trim().slice(0, 1000);
+      }
+      transaction.update(userRef, userUpdates);
+
+      const notifId = makeSafeId('notif');
+      transaction.set(doc(db, 'notifications', notifId), {
+        id: notifId,
+        userId: params.userId,
+        recipientEmail: (params.userEmail || 'member@bluewhalemarkethub.com').slice(0, 160),
+        subject: fullyActivated ? 'Account Approved & Activated' : 'Account Profile Approved',
+        body: fullyActivated
+          ? 'Congratulations! Your account has been approved and your registration payment is verified. You may now log in and access your dashboard.'
+          : 'Your account profile has been approved. Dashboard access will unlock automatically once your $10 USD registration payment is verified.',
+        category: 'registration_payment',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+
+      if (params.adminUser) {
+        const adminLogId = makeSafeId('alog');
+        transaction.set(doc(db, 'adminLogs', adminLogId), {
+          id: adminLogId,
+          adminUid: params.adminUser.uid,
+          adminEmail: params.adminUser.email.slice(0, 160),
+          action: fullyActivated ? 'ACCOUNT_APPROVED_AND_ACTIVATED' : 'USER_APPROVED',
+          targetUserId: params.userId,
+          targetEmail: (params.userEmail || 'unknown').slice(0, 160),
+          ...(params.username ? { targetUsername: params.username.slice(0, 64) } : {}),
+          previousStatus: prevAccountStatus,
+          newStatus: 'approved',
+          details: `Approved user ${params.fullName} (${params.userEmail || params.userId}) — payment_status=${currentPaymentStatus}, dashboard_access=${fullyActivated}`,
+          createdAt: serverTimestamp(),
+        });
+      }
+    });
+    return { fullyActivated };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${params.userId}`);
+  }
+}
+
+export async function adminVerifyFirebasePayment(params: {
+  userId: string;
+  userEmail: string;
+  fullName: string;
+  username?: string;
+  paymentId?: string;
+  adminNotes?: string;
+  adminUser?: { uid: string; email: string };
+}): Promise<{ fullyActivated: boolean }> {
+  let fullyActivated = false;
+  try {
+    await runTransaction(db, async (transaction) => {
+      const userRef = doc(db, 'users', params.userId);
+      const userSnap = await transaction.get(userRef);
+      if (!userSnap.exists()) {
+        throw new Error('User record not found.');
+      }
+      const userData = userSnap.data();
+      const currentAccountStatus = getSimpleAccountStatus({
+        role: userData.role as UserAccount['role'],
+        email: params.userEmail,
+        status: userData.status as AccountStatus,
+        account_status: userData.account_status as SimpleAccountStatus | undefined,
+      });
+      const prevPaymentStatus = getPaymentStatus({
+        role: userData.role as UserAccount['role'],
+        email: params.userEmail,
+        status: userData.status as AccountStatus,
+        account_status: userData.account_status as SimpleAccountStatus | undefined,
+        payment_status: userData.payment_status as PaymentStatus | undefined,
+        registrationPaymentStatus: userData.registrationPaymentStatus as UserAccount['registrationPaymentStatus'],
+      });
+
+      const resolvedPayId = params.paymentId || (userData.registrationPaymentId ? String(userData.registrationPaymentId) : undefined);
+      const payRef = resolvedPayId ? doc(db, 'registrationPayments', resolvedPayId) : null;
+      const paySnap = payRef ? await transaction.get(payRef) : null;
+
+      fullyActivated = currentAccountStatus === 'approved';
+      const userUpdates: Record<string, unknown> = {
+        account_status: currentAccountStatus,
+        payment_status: 'verified',
+        registrationPaymentStatus: 'Approved',
+        paymentVerifiedAt: serverTimestamp(),
+        dashboard_access: fullyActivated,
+        status: fullyActivated
+          ? 'Approved'
+          : currentAccountStatus === 'rejected'
+            ? 'Rejected'
+            : currentAccountStatus === 'suspended'
+              ? 'Suspended'
+              : 'Pending Payment',
+        isVerified: fullyActivated,
+        updatedAt: serverTimestamp(),
+      };
+      if (typeof params.adminNotes === 'string') {
+        userUpdates.adminNotes = params.adminNotes.trim().slice(0, 1000);
+      }
+      transaction.update(userRef, userUpdates);
+
+      if (payRef && paySnap && paySnap.exists() && paySnap.data().status === 'Pending') {
+        transaction.update(payRef, {
+          status: 'Approved',
+          reviewedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          ...(params.adminNotes ? { adminNote: params.adminNotes.trim().slice(0, 500) } : {}),
+        });
+      }
+
+      const notifId = makeSafeId('notif');
+      transaction.set(doc(db, 'notifications', notifId), {
+        id: notifId,
+        userId: params.userId,
+        recipientEmail: (params.userEmail || 'member@bluewhalemarkethub.com').slice(0, 160),
+        subject: fullyActivated ? 'Account Approved & Activated' : 'Registration Payment Verified',
+        body: fullyActivated
+          ? 'Congratulations! Your registration payment has been verified and your account is approved. You may now log in and access your dashboard.'
+          : 'Your $10 USD registration payment has been verified. Your account is now awaiting administrator approval before dashboard access unlocks.',
+        category: 'registration_payment',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+
+      if (params.adminUser) {
+        const adminLogId = makeSafeId('alog');
+        transaction.set(doc(db, 'adminLogs', adminLogId), {
+          id: adminLogId,
+          adminUid: params.adminUser.uid,
+          adminEmail: params.adminUser.email.slice(0, 160),
+          action: fullyActivated ? 'PAYMENT_VERIFIED_AND_ACTIVATED' : 'PAYMENT_VERIFIED',
+          targetUserId: params.userId,
+          targetEmail: (params.userEmail || 'unknown').slice(0, 160),
+          ...(params.username ? { targetUsername: params.username.slice(0, 64) } : {}),
+          previousStatus: prevPaymentStatus,
+          newStatus: 'verified',
+          details: `Verified registration payment for ${params.fullName} (${params.userEmail || params.userId}) — account_status=${currentAccountStatus}, dashboard_access=${fullyActivated}`,
+          createdAt: serverTimestamp(),
+        });
+      }
+    });
+    return { fullyActivated };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${params.userId}`);
+  }
+}
+
+export async function adminRejectFirebasePayment(params: {
+  userId: string;
+  userEmail: string;
+  fullName: string;
+  username?: string;
+  paymentId?: string;
+  rejectionReason?: string;
+  adminNotes?: string;
+  adminUser?: { uid: string; email: string };
+}): Promise<void> {
+  try {
+    await runTransaction(db, async (transaction) => {
+      const userRef = doc(db, 'users', params.userId);
+      const userSnap = await transaction.get(userRef);
+      if (!userSnap.exists()) {
+        throw new Error('User record not found.');
+      }
+      const userData = userSnap.data();
+      const currentAccountStatus = getSimpleAccountStatus({
+        role: userData.role as UserAccount['role'],
+        email: params.userEmail,
+        status: userData.status as AccountStatus,
+        account_status: userData.account_status as SimpleAccountStatus | undefined,
+      });
+      const reason = (
+        params.rejectionReason ||
+        'Registration payment receipt or TXID could not be verified. Please submit new payment proof.'
+      )
+        .trim()
+        .slice(0, 500);
+
+      const resolvedPayId = params.paymentId || (userData.registrationPaymentId ? String(userData.registrationPaymentId) : undefined);
+      const payRef = resolvedPayId ? doc(db, 'registrationPayments', resolvedPayId) : null;
+      const paySnap = payRef ? await transaction.get(payRef) : null;
+
+      const userUpdates: Record<string, unknown> = {
+        payment_status: 'rejected',
+        registrationPaymentStatus: 'Rejected',
+        dashboard_access: false,
+        isVerified: false,
+        rejectionReason: reason,
+        status:
+          currentAccountStatus === 'rejected'
+            ? 'Rejected'
+            : currentAccountStatus === 'suspended'
+              ? 'Suspended'
+              : 'Pending Payment',
+        updatedAt: serverTimestamp(),
+      };
+      if (typeof params.adminNotes === 'string') {
+        userUpdates.adminNotes = params.adminNotes.trim().slice(0, 1000);
+      }
+      transaction.update(userRef, userUpdates);
+
+      if (payRef && paySnap && paySnap.exists() && paySnap.data().status === 'Pending') {
+        transaction.update(payRef, {
+          status: 'Rejected',
+          rejectionReason: reason,
+          reviewedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          ...(params.adminNotes ? { adminNote: params.adminNotes.trim().slice(0, 500) } : {}),
+        });
+      }
+
+      const notifId = makeSafeId('notif');
+      transaction.set(doc(db, 'notifications', notifId), {
+        id: notifId,
+        userId: params.userId,
+        recipientEmail: (params.userEmail || 'member@bluewhalemarkethub.com').slice(0, 160),
+        subject: 'Registration Payment Rejected',
+        body: `Your registration payment was rejected. Reason: ${reason}`,
+        category: 'registration_payment',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+
+      if (params.adminUser) {
+        const adminLogId = makeSafeId('alog');
+        transaction.set(doc(db, 'adminLogs', adminLogId), {
+          id: adminLogId,
+          adminUid: params.adminUser.uid,
+          adminEmail: params.adminUser.email.slice(0, 160),
+          action: 'PAYMENT_REJECTED',
+          targetUserId: params.userId,
+          targetEmail: (params.userEmail || 'unknown').slice(0, 160),
+          ...(params.username ? { targetUsername: params.username.slice(0, 64) } : {}),
+          newStatus: 'rejected',
+          details: `Rejected registration payment for ${params.fullName}: ${reason}`,
+          createdAt: serverTimestamp(),
+        });
+      }
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${params.userId}`);
+  }
+}
+
+export async function adminReviewFirebaseRegistration(params: {
+  userId: string;
+  userEmail: string;
+  fullName: string;
+  username?: string;
+  previousStatus?: string;
+  paymentId?: string;
+  decision: 'Approved' | 'Rejected' | 'Suspended';
+  rejectionReason?: string;
+  adminNotes?: string;
+  adminUser?: { uid: string; email: string };
+}): Promise<void> {
+  if (params.decision === 'Approved') {
+    await adminApproveFirebaseUser({
+      userId: params.userId,
+      userEmail: params.userEmail,
+      fullName: params.fullName,
+      username: params.username,
+      adminNotes: params.adminNotes,
+      adminUser: params.adminUser,
+    });
+    return;
+  }
+
+  try {
+    const batch = writeBatch(db);
+    const userRef = doc(db, 'users', params.userId);
+    const simpleDecision = getSimpleAccountStatus(params.decision);
+    const userUpdates: Record<string, unknown> = {
+      status: params.decision,
+      account_status: simpleDecision,
+      dashboard_access: false,
+      isVerified: false,
+      updatedAt: serverTimestamp(),
+    };
+    if (typeof params.adminNotes === 'string') {
+      userUpdates.adminNotes = params.adminNotes.trim().slice(0, 1000);
+    }
+
+    if (params.decision === 'Rejected') {
+      userUpdates.rejectedAt = serverTimestamp();
+      userUpdates.rejectionReason = (params.rejectionReason || 'Your registration was not approved. Please contact support.').trim().slice(0, 500);
+    }
+
+    batch.update(userRef, userUpdates);
+
+    const notifId = makeSafeId('notif');
+    if (params.decision === 'Rejected') {
+      batch.set(doc(db, 'notifications', notifId), {
+        id: notifId,
+        userId: params.userId,
+        recipientEmail: (params.userEmail || 'member@bluewhalemarkethub.com').slice(0, 160),
+        subject: 'Registration Payment Rejected',
+        body: `Your registration was not approved. Please contact support. Reason: ${(params.rejectionReason || 'Verification failed.').trim()}`,
+        category: 'registration_payment',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+    } else if (params.decision === 'Suspended') {
+      batch.set(doc(db, 'notifications', notifId), {
+        id: notifId,
+        userId: params.userId,
+        recipientEmail: (params.userEmail || 'member@bluewhalemarkethub.com').slice(0, 160),
+        subject: 'Account Suspended',
+        body: `Your account has been suspended. Contact support at ${SUPPORT_EMAIL}.`,
+        category: 'security',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+    }
+
+    if (params.adminUser) {
+      const adminLogId = makeSafeId('alog');
+      const actionMap = {
+        Rejected: 'ACCOUNT_REJECTED',
+        Suspended: 'ACCOUNT_SUSPENDED',
+      } as const;
+      batch.set(doc(db, 'adminLogs', adminLogId), {
+        id: adminLogId,
+        adminUid: params.adminUser.uid,
+        adminEmail: params.adminUser.email.slice(0, 160),
+        action: actionMap[params.decision],
+        targetUserId: params.userId,
+        targetEmail: (params.userEmail || 'unknown').slice(0, 160),
+        ...(params.username ? { targetUsername: params.username.slice(0, 64) } : {}),
+        ...(params.previousStatus ? { previousStatus: params.previousStatus.slice(0, 64) } : {}),
+        newStatus: params.decision,
+        details: `${params.decision} registration for ${params.fullName} (${params.userEmail || params.userId})`,
+        createdAt: serverTimestamp(),
+      });
+    }
+
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${params.userId}`);
+  }
+}
+
+export function mapFirestoreRegistrationPayment(
+  id: string,
+  data: Record<string, unknown>,
+): RegistrationPayment {
+  return {
+    id,
+    userId: String(data.userId || ''),
+    userEmail: String(data.userEmail || ''),
+    username: String(data.username || ''),
+    fullName: String(data.fullName || ''),
+    amount: Number(data.amount || 0),
+    currency: (data.currency as CryptoCurrencyCode) || 'BTC',
+    walletAddress: String(data.walletAddress || ''),
+    txId: String(data.txId || ''),
+    receiptDataUrl: String(data.receiptDataUrl || ''),
+    receiptFileName: String(data.receiptFileName || ''),
+    status: (data.status as RegistrationPayment['status']) || 'Pending',
+    rejectionReason: data.rejectionReason ? String(data.rejectionReason) : undefined,
+    adminNote: data.adminNote ? String(data.adminNote) : undefined,
+    createdAt: tsToIso(data.createdAt),
+    updatedAt: tsToIso(data.updatedAt),
+    reviewedAt: data.reviewedAt ? tsToIso(data.reviewedAt) : undefined,
+  };
+}
+
+export async function adminUpdateFirebaseUser(
+  uid: string,
+  updates: {
+    status?: AccountStatus;
+    payment_status?: PaymentStatus;
+    isVerified?: boolean;
+    adminNotes?: string;
+    rejectionReason?: string;
+  },
+  context?: {
+    targetUser?: UserAccount;
+    adminUser?: { uid: string; email: string };
+  },
+): Promise<void> {
+  try {
+    const batch = writeBatch(db);
+    const currentAccountStatus = updates.status
+      ? getSimpleAccountStatus(updates.status)
+      : context?.targetUser
+        ? getSimpleAccountStatus(context.targetUser)
+        : 'pending';
+    const currentPaymentStatus = updates.payment_status
+      ? updates.payment_status
+      : context?.targetUser
+        ? getPaymentStatus(context.targetUser)
+        : 'unpaid';
+    const nextDashboardAccess = currentAccountStatus === 'approved' && currentPaymentStatus === 'verified';
+
+    const cleanUpdates: Record<string, unknown> = {
+      updatedAt: serverTimestamp(),
+      account_status: currentAccountStatus,
+      payment_status: currentPaymentStatus,
+      dashboard_access: nextDashboardAccess,
+    };
+
+    if (updates.status !== undefined) {
+      cleanUpdates.status = nextDashboardAccess
+        ? 'Approved'
+        : currentAccountStatus === 'rejected'
+          ? 'Rejected'
+          : currentAccountStatus === 'suspended'
+            ? 'Suspended'
+            : 'Pending Payment';
+      cleanUpdates.isVerified = nextDashboardAccess;
+      if (currentAccountStatus === 'approved') {
+        cleanUpdates.approvedAt = serverTimestamp();
+        cleanUpdates.rejectionReason = '';
+      } else if (currentAccountStatus === 'rejected') {
+        cleanUpdates.rejectedAt = serverTimestamp();
+      }
+    }
+    if (updates.payment_status !== undefined) {
+      cleanUpdates.registrationPaymentStatus =
+        currentPaymentStatus === 'verified'
+          ? 'Approved'
+          : currentPaymentStatus === 'pending_verification'
+            ? 'Pending Review'
+            : currentPaymentStatus === 'rejected'
+              ? 'Rejected'
+              : 'Unpaid';
+      if (currentPaymentStatus === 'verified') {
+        cleanUpdates.paymentVerifiedAt = serverTimestamp();
+      }
+      cleanUpdates.status = nextDashboardAccess
+        ? 'Approved'
+        : currentAccountStatus === 'rejected'
+          ? 'Rejected'
+          : currentAccountStatus === 'suspended'
+            ? 'Suspended'
+            : 'Pending Payment';
+      cleanUpdates.isVerified = nextDashboardAccess;
+    }
+    if (updates.isVerified !== undefined && !nextDashboardAccess) cleanUpdates.isVerified = updates.isVerified;
+    if (updates.adminNotes !== undefined) cleanUpdates.adminNotes = updates.adminNotes.slice(0, 1000);
+    if (updates.rejectionReason !== undefined) cleanUpdates.rejectionReason = updates.rejectionReason.slice(0, 500);
+    batch.update(doc(db, 'users', uid), cleanUpdates);
+
+    const targetEmail = context?.targetUser?.email || '';
+    if (currentAccountStatus === 'suspended' && context?.targetUser?.account_status !== 'suspended') {
+      const notifId = makeSafeId('notif');
+      batch.set(doc(db, 'notifications', notifId), {
+        id: notifId,
+        userId: uid,
+        recipientEmail: (targetEmail || 'member@bluewhalemarkethub.com').slice(0, 160),
+        subject: 'Account Suspended',
+        body: `Your account has been suspended. Contact support at ${SUPPORT_EMAIL}.`,
+        category: 'security',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+    } else if (nextDashboardAccess && !context?.targetUser?.dashboard_access) {
+      const notifId = makeSafeId('notif');
+      batch.set(doc(db, 'notifications', notifId), {
+        id: notifId,
+        userId: uid,
+        recipientEmail: (targetEmail || 'member@bluewhalemarkethub.com').slice(0, 160),
+        subject: 'Account Approved & Activated',
+        body: 'Congratulations! Your account has been approved and your registration payment is verified. You may now log in and access your dashboard.',
+        category: 'registration_payment',
+        read: false,
+        createdAt: serverTimestamp(),
+      });
+    }
+
+    if (context?.adminUser) {
+      const adminLogId = makeSafeId('alog');
+      const actionLabel =
+        currentAccountStatus === 'suspended'
+          ? 'ACCOUNT_SUSPENDED'
+          : nextDashboardAccess
+            ? 'ACCOUNT_APPROVED_AND_ACTIVATED'
+            : currentAccountStatus === 'rejected'
+              ? 'ACCOUNT_REJECTED'
+              : 'USER_UPDATED';
+      batch.set(doc(db, 'adminLogs', adminLogId), {
+        id: adminLogId,
+        adminUid: context.adminUser.uid,
+        adminEmail: context.adminUser.email.slice(0, 160),
+        action: actionLabel,
+        targetUserId: uid,
+        ...(targetEmail ? { targetEmail: targetEmail.slice(0, 160) } : {}),
+        ...(context.targetUser?.username ? { targetUsername: context.targetUser.username.slice(0, 64) } : {}),
+        ...(context.targetUser?.status ? { previousStatus: String(context.targetUser.status).slice(0, 64) } : {}),
+        newStatus: String(cleanUpdates.status || currentAccountStatus).slice(0, 64),
+        details: `Updated ${targetEmail || uid}: account_status=${currentAccountStatus}, payment_status=${currentPaymentStatus}, dashboard_access=${nextDashboardAccess}`,
+        createdAt: serverTimestamp(),
+      });
+    }
+
+    await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
+  }
+}
+
+export async function adminDeleteFirebaseUser(
+  uid: string,
+  context?: {
+    targetUser?: UserAccount;
+    adminUser?: { uid: string; email: string };
+  },
+): Promise<void> {
+  if (context?.targetUser?.email.trim().toLowerCase() === ADMIN_EMAIL || uid === context?.adminUser?.uid) {
+    throw new Error('Cannot delete the exclusive administrator account.');
+  }
+  try {
+    const batch = writeBatch(db);
+    batch.delete(doc(db, 'users', uid, 'private', 'info'));
+    batch.delete(doc(db, 'users', uid));
+
+    if (context?.adminUser) {
+      const adminLogId = makeSafeId('alog');
+      const targetEmail = context?.targetUser?.email || '';
+      batch.set(doc(db, 'adminLogs', adminLogId), {
+        id: adminLogId,
+        adminUid: context.adminUser.uid,
+        adminEmail: context.adminUser.email.slice(0, 160),
+        action: 'USER_DELETED',
+        targetUserId: uid,
+        ...(targetEmail ? { targetEmail: targetEmail.slice(0, 160) } : {}),
+        ...(context.targetUser?.username ? { targetUsername: context.targetUser.username.slice(0, 64) } : {}),
+        ...(context.targetUser?.status ? { previousStatus: String(context.targetUser.status).slice(0, 64) } : {}),
+        newStatus: 'Deleted',
+        details: `Deleted registered user ${context.targetUser?.fullName || uid} (${targetEmail || uid})`,
+        createdAt: serverTimestamp(),
+      });
+    }
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${uid}`);
   }
 }
 
@@ -622,12 +1451,27 @@ export async function sendFirebaseSupportMessage(params: {
 export async function adminUpdateFirebaseTicketStatus(
   ticketId: string,
   status: SupportTicket['status'],
+  adminUser?: { uid: string; email: string },
 ): Promise<void> {
   try {
-    await updateDoc(doc(db, 'supportTickets', ticketId), {
+    const batch = writeBatch(db);
+    batch.update(doc(db, 'supportTickets', ticketId), {
       status,
       updatedAt: serverTimestamp(),
     });
+    if (adminUser) {
+      const adminLogId = makeSafeId('alog');
+      batch.set(doc(db, 'adminLogs', adminLogId), {
+        id: adminLogId,
+        adminUid: adminUser.uid,
+        adminEmail: adminUser.email.slice(0, 160),
+        action: 'TICKET_STATUS_UPDATED',
+        newStatus: status,
+        details: `Updated support ticket ${ticketId} status to ${status}`,
+        createdAt: serverTimestamp(),
+      });
+    }
+    await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `supportTickets/${ticketId}`);
   }
@@ -665,14 +1509,20 @@ export function mapFirestoreDeposit(id: string, data: Record<string, unknown>): 
     userId: String(data.userId || ''),
     userEmail: String(data.userEmail || ''),
     username: String(data.username || ''),
+    userName: data.userName ? String(data.userName) : undefined,
     amount: Number(data.amount || 0),
     currency: (data.currency as CryptoCurrencyCode) || 'BTC',
     walletAddress: String(data.walletAddress || ''),
     txHash: String(data.txHash || ''),
+    receiptUrl: data.receiptUrl ? String(data.receiptUrl) : undefined,
     receiptDataUrl: data.receiptDataUrl ? String(data.receiptDataUrl) : undefined,
     receiptFileName: data.receiptFileName ? String(data.receiptFileName) : undefined,
     status: (data.status as DepositRecord['status']) || 'Pending',
     adminNote: data.adminNote ? String(data.adminNote) : undefined,
+    rejectionReason: data.rejectionReason ? String(data.rejectionReason) : undefined,
+    reviewedBy: data.reviewedBy ? String(data.reviewedBy) : undefined,
+    approvedAt: data.approvedAt ? tsToIso(data.approvedAt) : undefined,
+    rejectedAt: data.rejectedAt ? tsToIso(data.rejectedAt) : undefined,
     createdAt: tsToIso(data.createdAt),
     updatedAt: tsToIso(data.updatedAt),
   };
@@ -871,6 +1721,7 @@ export async function triggerFirebasePriceAlert(params: {
 
 export async function adminUpdateFirebaseServicePrice(params: {
   adminUid: string;
+  adminEmail?: string;
   serviceId: string;
   personalPrice: number;
   businessPrice: number;
@@ -950,9 +1801,19 @@ export async function adminUpdateFirebaseServicePrice(params: {
       }
     });
 
-    if (triggeredCount > 0) {
-      await batch.commit();
-    }
+    const adminLogId = makeSafeId('alog');
+    batch.set(doc(db, 'adminLogs', adminLogId), {
+      id: adminLogId,
+      adminUid: params.adminUid,
+      adminEmail: (params.adminEmail || ADMIN_EMAIL).slice(0, 160),
+      action: params.resetToDefault ? 'PRICING_RESET' : 'PRICING_UPDATED',
+      details: params.resetToDefault
+        ? `Restored default catalog pricing for ${service.providerName}`
+        : `Updated ${service.providerName} pricing (Personal $${params.personalPrice.toFixed(0)}, Business $${params.businessPrice.toFixed(0)}, Corporate $${params.corporatePrice.toFixed(0)})`,
+      createdAt: serverTimestamp(),
+    });
+
+    await batch.commit();
 
     return { triggeredCount };
   } catch (error) {
@@ -998,4 +1859,74 @@ export function mapFirestorePriceAlert(
     updatedAt: tsToIso(data.updatedAt),
     triggeredAt: data.triggeredAt ? tsToIso(data.triggeredAt) : undefined,
   };
+}
+
+export function mapFirestoreAdminLog(
+  id: string,
+  data: Record<string, unknown>,
+): AdminLogEntry {
+  return {
+    id,
+    adminUid: String(data.adminUid || ''),
+    adminEmail: String(data.adminEmail || ''),
+    action: String(data.action || ''),
+    targetUserId: data.targetUserId ? String(data.targetUserId) : undefined,
+    targetEmail: data.targetEmail ? String(data.targetEmail) : undefined,
+    targetUsername: data.targetUsername ? String(data.targetUsername) : undefined,
+    previousStatus: data.previousStatus ? String(data.previousStatus) : undefined,
+    newStatus: data.newStatus ? String(data.newStatus) : undefined,
+    details: String(data.details || ''),
+    createdAt: tsToIso(data.createdAt),
+  };
+}
+
+export function mapFirestoreWebsiteSettings(
+  id: string,
+  data: Record<string, unknown>,
+): WebsiteSettings {
+  return {
+    id: String(data.id || id),
+    registrationFeeUsd: Number(data.registrationFeeUsd ?? REGISTRATION_FEE_USD),
+    minimumDepositUsd: Number(data.minimumDepositUsd ?? 100),
+    supportEmail: String(data.supportEmail || SUPPORT_EMAIL),
+    marketplaceNotice: String(data.marketplaceNotice || ''),
+    requireRegistrationApproval: Boolean(data.requireRegistrationApproval ?? true),
+    updatedBy: String(data.updatedBy || ''),
+    updatedAt: tsToIso(data.updatedAt),
+  };
+}
+
+export async function saveFirebaseWebsiteSettings(params: {
+  adminUser: { uid: string; email: string };
+  registrationFeeUsd: number;
+  minimumDepositUsd: number;
+  supportEmail: string;
+  marketplaceNotice: string;
+  requireRegistrationApproval: boolean;
+}): Promise<void> {
+  try {
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'siteSettings', 'global'), {
+      id: 'global',
+      registrationFeeUsd: Number(params.registrationFeeUsd),
+      minimumDepositUsd: Number(params.minimumDepositUsd),
+      supportEmail: params.supportEmail.trim().slice(0, 160),
+      marketplaceNotice: params.marketplaceNotice.trim().slice(0, 300),
+      requireRegistrationApproval: Boolean(params.requireRegistrationApproval),
+      updatedBy: params.adminUser.uid,
+      updatedAt: serverTimestamp(),
+    });
+    const adminLogId = makeSafeId('alog');
+    batch.set(doc(db, 'adminLogs', adminLogId), {
+      id: adminLogId,
+      adminUid: params.adminUser.uid,
+      adminEmail: params.adminUser.email.slice(0, 160),
+      action: 'SITE_SETTINGS_UPDATED',
+      details: `Updated website settings (Reg fee $${params.registrationFeeUsd}, Min deposit $${params.minimumDepositUsd}, Support ${params.supportEmail})`,
+      createdAt: serverTimestamp(),
+    });
+    await batch.commit();
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'siteSettings/global');
+  }
 }

@@ -18,10 +18,10 @@ export const dirtyDozenPayloads = [
     expected: 'PERMISSION_DENIED',
   },
   {
-    name: '3. Self-assigned admin role on signup',
+    name: '3. Self-assigned admin role or Approved status on signup',
     auth: { uid: 'u1', token: { email: 'user@example.com', email_verified: true } },
     path: 'users/u1',
-    payload: { uid: 'u1', role: 'admin', status: 'active', walletBalance: 0 },
+    payload: { uid: 'u1', role: 'admin', status: 'Approved', walletBalance: 0 },
     expected: 'PERMISSION_DENIED',
   },
   {
@@ -108,4 +108,19 @@ export const dirtyDozenPayloads = [
     payload: { status: 'Triggered', triggeredPrice: 150 },
     expected: 'PERMISSION_DENIED',
   },
+  {
+    name: '15. Pending Payment user attempts to place order or deposit',
+    auth: { uid: 'u_pending', token: { email: 'pending@example.com', email_verified: true } },
+    path: 'orders/ord_002',
+    payload: { id: 'ord_002', userId: 'u_pending', price: 150, status: 'Processing' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    name: '16. Registration fee payment below $5 or self-approved',
+    auth: { uid: 'u_pending', token: { email: 'pending@example.com', email_verified: true } },
+    path: 'registrationPayments/reg_001',
+    payload: { id: 'reg_001', userId: 'u_pending', amount: 2, status: 'Approved' },
+    expected: 'PERMISSION_DENIED',
+  },
 ];
+

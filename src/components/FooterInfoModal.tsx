@@ -149,6 +149,15 @@ export function FooterInfoModal({ page, onClose, onOpenSupportCenter }: FooterIn
 
           {page === 'support' && (
             <div className="space-y-4">
+              <div className="p-3.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 text-xs text-blue-900 dark:text-blue-200">
+                Direct Support Email:{' '}
+                <a
+                  href="mailto:Bluewhalemarkethub@gmail.com"
+                  className="font-semibold underline hover:text-blue-700 dark:hover:text-blue-300"
+                >
+                  Bluewhalemarkethub@gmail.com
+                </a>
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {KNOWLEDGE_BASE_ARTICLES.map((art) => (
                   <div
@@ -182,6 +191,15 @@ export function FooterInfoModal({ page, onClose, onOpenSupportCenter }: FooterIn
 
           {page === 'contact' && (
             <form onSubmit={handleContactSubmit} className="space-y-3.5">
+              <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300">
+                Need direct assistance? Email support anytime at{' '}
+                <a
+                  href="mailto:Bluewhalemarkethub@gmail.com"
+                  className="font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  Bluewhalemarkethub@gmail.com
+                </a>
+              </div>
               {sentRef && (
                 <div className="p-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-200 flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4" />

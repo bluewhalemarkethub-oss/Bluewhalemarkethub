@@ -28,6 +28,8 @@ import {
   BellRing,
   Trash2,
   Edit3,
+  MapPin,
+  Truck,
 } from 'lucide-react';
 import { LOYALTY_TIERS, evaluateLoyaltyStatus } from '../data/loyaltyRewards';
 import {
@@ -44,17 +46,19 @@ import { downloadOrderInvoice, downloadTransactionReceipt } from '../lib/invoice
 import { mapFirestoreSupportMessage } from '../services/firestoreMarketplace';
 import { QrCodeCanvas } from './QrCodeCanvas';
 import { ReceiptPreviewModal } from './ReceiptPreviewModal';
-import type {
-  AuthMode,
-  DepositRecord,
-  EmailNotification,
-  LoginActivity,
-  PriceAlert,
-  ShippingOrder,
-  SupportMessage,
-  SupportTicket,
-  UserAccount,
-  WalletTransaction,
+import {
+  getDisplayRole,
+  normalizeAccountStatus,
+  type AuthMode,
+  type DepositRecord,
+  type EmailNotification,
+  type LoginActivity,
+  type PriceAlert,
+  type ShippingOrder,
+  type SupportMessage,
+  type SupportTicket,
+  type UserAccount,
+  type WalletTransaction,
 } from '../types/marketplace';
 
 export type DashboardTab =
@@ -62,6 +66,7 @@ export type DashboardTab =
   | 'wallet'
   | 'transactions'
   | 'orders'
+  | 'track'
   | 'alerts'
   | 'loyalty'
   | 'support'
@@ -179,12 +184,27 @@ export function UserDashboard({
   const [txFilter, setTxFilter] = useState<TxFilter>('all');
   const [txSearch, setTxSearch] = useState('');
   const [previewDeposit, setPreviewDeposit] = useState<DepositRecord | null>(null);
+  const [depositStatusFilter, setDepositStatusFilter] = useState<'All' | 'Pending' | 'Approved' | 'Rejected'>('All');
   const [refreshingWallet, setRefreshingWallet] = useState(false);
   const [alertBusyId, setAlertBusyId] = useState<string | null>(null);
+  const [trackOrderInput, setTrackOrderInput] = useState('');
+  const [selectedTrackOrderId, setSelectedTrackOrderId] = useState<string>(() => orders[0]?.id || '');
+  const [trackLookupError, setTrackLookupError] = useState('');
+  const [copiedTrackId, setCopiedTrackId] = useState(false);
 
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  useEffect(() => {
+    if (orders.length === 0) {
+      setSelectedTrackOrderId('');
+      return;
+    }
+    if (!selectedTrackOrderId || !orders.some((o) => o.id === selectedTrackOrderId)) {
+      setSelectedTrackOrderId(orders[0].id);
+    }
+  }, [orders, selectedTrackOrderId]);
 
   // Profile fields (First Name / Last Name split cleanly)
   const nameParts = user.fullName.trim().split(/\s+/);
@@ -255,6 +275,38 @@ export function UserDashboard({
   const unreadNotifs = notifications.filter((n) => !n.read).length;
   const loyalty = evaluateLoyaltyStatus(user.totalPurchases);
   const referralCode = `BW-${user.username.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'PARTNER'}`;
+  const trackedOrder = orders.find((o) => o.id === selectedTrackOrderId) || null;
+
+  function handleSelectOrderForTracking(order: ShippingOrder) {
+    setSelectedTrackOrderId(order.id);
+    setTrackOrderInput(order.id);
+    setTrackLookupError('');
+    setActiveTab('track');
+  }
+
+  function handleTrackOrderLookup(e: React.FormEvent) {
+    e.preventDefault();
+    const raw = trackOrderInput.trim().toLowerCase();
+    if (!raw) {
+      setTrackLookupError('Please enter an Order ID or Activation Reference to track.');
+      return;
+    }
+    const matched = orders.find(
+      (o) =>
+        o.id.toLowerCase() === raw ||
+        o.trackingCode.toLowerCase() === raw ||
+        o.id.toLowerCase().includes(raw) ||
+        o.trackingCode.toLowerCase().includes(raw),
+    );
+    if (!matched) {
+      setTrackLookupError(
+        'No matching order found under your account. Check the Order ID or select one from the list below.',
+      );
+      return;
+    }
+    setTrackLookupError('');
+    setSelectedTrackOrderId(matched.id);
+  }
 
   const filteredTransactions = transactions.filter((tx) => {
     if (txFilter !== 'all' && tx.type !== txFilter) return false;
@@ -417,6 +469,7 @@ export function UserDashboard({
     { id: 'wallet', label: 'Wallet', icon: <Wallet className="w-4 h-4" /> },
     { id: 'transactions', label: 'Transactions', icon: <ArrowUpRight className="w-4 h-4" />, count: transactions.length },
     { id: 'orders', label: 'Orders', icon: <Package className="w-4 h-4" />, count: orders.length },
+    { id: 'track', label: 'Track Order', icon: <MapPin className="w-4 h-4" /> },
     {
       id: 'alerts',
       label: 'Price Alerts',
@@ -443,8 +496,13 @@ export function UserDashboard({
                 className="w-11 h-11 rounded-full object-cover border border-slate-200 dark:border-slate-700"
               />
               <div className="min-w-0">
-                <div className="font-display font-semibold text-sm text-slate-900 dark:text-white truncate">
-                  {user.fullName}
+                <div className="flex items-center gap-2">
+                  <span className="font-display font-semibold text-sm text-slate-900 dark:text-white truncate">
+                    {user.fullName}
+                  </span>
+                  <span className="px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide rounded bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 shrink-0">
+                    {getDisplayRole(user.role)}
+                  </span>
                 </div>
                 <div className="text-xs text-slate-500 dark:text-slate-400 truncate">
                   @{user.username} · {user.country}
@@ -898,86 +956,191 @@ export function UserDashboard({
               </div>
 
               {/* Deposit History & Uploaded Receipts */}
-              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-                <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                  <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
-                    Deposit History &amp; Payment Receipts
-                  </h2>
-                  <span className="text-xs text-slate-500">
-                    {deposits.filter((d) => d.status === 'Pending').length} pending confirmation
-                  </span>
-                </div>
-                {deposits.length === 0 ? (
-                  <div className="p-8 text-center text-sm text-slate-500">
-                    No deposits submitted yet. Submit a deposit with your payment receipt to fund your wallet.
+              {(() => {
+                const pendingDepositsList = deposits.filter((d) => d.status === 'Pending');
+                const approvedDepositsList = deposits.filter((d) => d.status === 'Approved');
+                const rejectedDepositsList = deposits.filter((d) => d.status === 'Rejected');
+                const visibleDeposits =
+                  depositStatusFilter === 'All'
+                    ? deposits
+                    : deposits.filter((d) => d.status === depositStatusFilter);
+
+                return (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setDepositStatusFilter(depositStatusFilter === 'Pending' ? 'All' : 'Pending')}
+                        className={`p-4 rounded-xl border text-left transition-colors ${
+                          depositStatusFilter === 'Pending'
+                            ? 'border-amber-500 bg-amber-50/70 dark:bg-amber-950/30'
+                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between text-xs text-slate-500">
+                          <span>Pending Deposits</span>
+                          <Clock className="w-3.5 h-3.5 text-amber-600" />
+                        </div>
+                        <div className="mt-1 font-mono text-xl font-bold tabular-nums text-slate-900 dark:text-white">
+                          {pendingDepositsList.length}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-slate-500">
+                          ${pendingDepositsList.reduce((acc, d) => acc + d.amount, 0).toFixed(2)} awaiting review
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDepositStatusFilter(depositStatusFilter === 'Approved' ? 'All' : 'Approved')}
+                        className={`p-4 rounded-xl border text-left transition-colors ${
+                          depositStatusFilter === 'Approved'
+                            ? 'border-emerald-500 bg-emerald-50/70 dark:bg-emerald-950/30'
+                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between text-xs text-slate-500">
+                          <span>Approved Deposits</span>
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                        </div>
+                        <div className="mt-1 font-mono text-xl font-bold tabular-nums text-slate-900 dark:text-white">
+                          {approvedDepositsList.length}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-emerald-700 dark:text-emerald-400">
+                          ${approvedDepositsList.reduce((acc, d) => acc + d.amount, 0).toFixed(2)} credited
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDepositStatusFilter(depositStatusFilter === 'Rejected' ? 'All' : 'Rejected')}
+                        className={`p-4 rounded-xl border text-left transition-colors ${
+                          depositStatusFilter === 'Rejected'
+                            ? 'border-rose-500 bg-rose-50/70 dark:bg-rose-950/30'
+                            : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between text-xs text-slate-500">
+                          <span>Rejected Deposits</span>
+                          <XCircle className="w-3.5 h-3.5 text-rose-600" />
+                        </div>
+                        <div className="mt-1 font-mono text-xl font-bold tabular-nums text-slate-900 dark:text-white">
+                          {rejectedDepositsList.length}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-rose-600 dark:text-rose-400">
+                          ${rejectedDepositsList.reduce((acc, d) => acc + d.amount, 0).toFixed(2)} declined
+                        </div>
+                      </button>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+                      <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                        <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
+                          Deposit History &amp; Payment Receipts
+                        </h2>
+                        <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg overflow-x-auto">
+                          {(
+                            [
+                              { id: 'All', label: `All (${deposits.length})` },
+                              { id: 'Pending', label: `Pending Deposits (${pendingDepositsList.length})` },
+                              { id: 'Approved', label: `Approved Deposits (${approvedDepositsList.length})` },
+                              { id: 'Rejected', label: `Rejected Deposits (${rejectedDepositsList.length})` },
+                            ] as const
+                          ).map((item) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              onClick={() => setDepositStatusFilter(item.id)}
+                              className={`px-2.5 py-1 text-xs font-medium rounded-md whitespace-nowrap transition-colors ${
+                                depositStatusFilter === item.id
+                                  ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-xs'
+                                  : 'text-slate-600 dark:text-slate-400'
+                              }`}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      {visibleDeposits.length === 0 ? (
+                        <div className="p-8 text-center text-sm text-slate-500">
+                          {deposits.length === 0
+                            ? 'No deposits submitted yet. Submit a deposit with your payment receipt to fund your wallet.'
+                            : `No ${depositStatusFilter.toLowerCase()} deposits found.`}
+                        </div>
+                      ) : (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-sm">
+                            <thead className="bg-slate-50 dark:bg-slate-950/60 text-xs text-slate-500">
+                              <tr>
+                                <th className="px-5 py-3 font-medium">Submission Date</th>
+                                <th className="px-5 py-3 font-medium">Network</th>
+                                <th className="px-5 py-3 font-medium">Transaction Hash</th>
+                                <th className="px-5 py-3 font-medium">Receipt</th>
+                                <th className="px-5 py-3 font-medium">Status</th>
+                                <th className="px-5 py-3 font-medium text-right">Amount</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                              {visibleDeposits.map((dep) => {
+                                const hasReceipt = Boolean(dep.receiptUrl || dep.receiptDataUrl);
+                                return (
+                                  <tr key={dep.id}>
+                                    <td className="px-5 py-3.5 text-xs font-mono tabular-nums text-slate-500 whitespace-nowrap">
+                                      {new Date(dep.createdAt).toLocaleString()}
+                                    </td>
+                                    <td className="px-5 py-3.5 text-xs font-medium text-slate-900 dark:text-white whitespace-nowrap">
+                                      {dep.currency.replace('_', ' ')}
+                                    </td>
+                                    <td className="px-5 py-3.5 font-mono text-xs text-slate-600 dark:text-slate-300 max-w-[200px] truncate">
+                                      {dep.txHash}
+                                    </td>
+                                    <td className="px-5 py-3.5 text-xs">
+                                      {hasReceipt ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => setPreviewDeposit(dep)}
+                                          className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                                        >
+                                          <FileText className="w-3.5 h-3.5" />
+                                          <span>View Receipt</span>
+                                        </button>
+                                      ) : (
+                                        <span className="text-slate-400">—</span>
+                                      )}
+                                    </td>
+                                    <td className="px-5 py-3.5">
+                                      <StatusLabel status={dep.status} />
+                                      {dep.status === 'Pending' && (
+                                        <div className="text-[11px] text-slate-500 mt-0.5">
+                                          Awaiting administrator review
+                                        </div>
+                                      )}
+                                      {dep.status === 'Approved' && (
+                                        <div className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-0.5">
+                                          Credited to wallet
+                                          {dep.approvedAt ? ` · ${new Date(dep.approvedAt).toLocaleDateString()}` : ''}
+                                        </div>
+                                      )}
+                                      {dep.status === 'Rejected' && (
+                                        <div className="text-[11px] text-rose-600 dark:text-rose-400 mt-0.5 max-w-[240px]">
+                                          {dep.rejectionReason || dep.adminNote || 'Rejected by support. Contact support for details.'}
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td className="px-5 py-3.5 font-mono tabular-nums text-right font-semibold text-slate-900 dark:text-white">
+                                      +${dep.amount.toFixed(2)}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                      <thead className="bg-slate-50 dark:bg-slate-950/60 text-xs text-slate-500">
-                        <tr>
-                          <th className="px-5 py-3 font-medium">Date</th>
-                          <th className="px-5 py-3 font-medium">Network</th>
-                          <th className="px-5 py-3 font-medium">Transaction Hash</th>
-                          <th className="px-5 py-3 font-medium">Receipt</th>
-                          <th className="px-5 py-3 font-medium">Status</th>
-                          <th className="px-5 py-3 font-medium text-right">Amount</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                        {deposits.map((dep) => (
-                          <tr key={dep.id}>
-                            <td className="px-5 py-3.5 text-xs font-mono tabular-nums text-slate-500 whitespace-nowrap">
-                              {new Date(dep.createdAt).toLocaleString()}
-                            </td>
-                            <td className="px-5 py-3.5 text-xs font-medium text-slate-900 dark:text-white whitespace-nowrap">
-                              {dep.currency.replace('_', ' ')}
-                            </td>
-                            <td className="px-5 py-3.5 font-mono text-xs text-slate-600 dark:text-slate-300 max-w-[200px] truncate">
-                              {dep.txHash}
-                            </td>
-                            <td className="px-5 py-3.5 text-xs">
-                              {dep.receiptDataUrl ? (
-                                <button
-                                  type="button"
-                                  onClick={() => setPreviewDeposit(dep)}
-                                  className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                                >
-                                  <FileText className="w-3.5 h-3.5" />
-                                  <span>View Receipt</span>
-                                </button>
-                              ) : (
-                                <span className="text-slate-400">—</span>
-                              )}
-                            </td>
-                            <td className="px-5 py-3.5">
-                              <StatusLabel status={dep.status} />
-                              {dep.status === 'Pending' && (
-                                <div className="text-[11px] text-slate-500 mt-0.5">
-                                  Awaiting admin approval
-                                </div>
-                              )}
-                              {dep.status === 'Approved' && (
-                                <div className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-0.5">
-                                  Credited to wallet
-                                </div>
-                              )}
-                              {dep.adminNote && (
-                                <div className="text-[11px] text-slate-500 mt-0.5 truncate max-w-[180px]">
-                                  {dep.adminNote}
-                                </div>
-                              )}
-                            </td>
-                            <td className="px-5 py-3.5 font-mono tabular-nums text-right font-semibold text-slate-900 dark:text-white">
-                              +${dep.amount.toFixed(2)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
+                );
+              })()}
             </div>
           )}
 
@@ -1134,15 +1297,25 @@ export function UserDashboard({
                           <td className="px-5 py-3.5 font-mono tabular-nums text-right">
                             ${ord.price.toFixed(2)}
                           </td>
-                          <td className="px-5 py-3.5 text-right">
-                            <button
-                              type="button"
-                              onClick={() => downloadOrderInvoice(ord)}
-                              className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              <span>Invoice</span>
-                            </button>
+                          <td className="px-5 py-3.5 text-right whitespace-nowrap">
+                            <div className="inline-flex items-center gap-3">
+                              <button
+                                type="button"
+                                onClick={() => handleSelectOrderForTracking(ord)}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
+                              >
+                                <MapPin className="w-3.5 h-3.5" />
+                                <span>Track</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => downloadOrderInvoice(ord)}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                <span>Invoice</span>
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1150,6 +1323,393 @@ export function UserDashboard({
                   </table>
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === 'track' && (
+            <div className="space-y-6">
+              {/* Order ID Lookup & Quick Switcher */}
+              <div className="p-6 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
+                      Order Status Lookup
+                    </h2>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                      Enter an Order ID or Activation Reference to view its real-time fulfillment timeline.
+                    </p>
+                  </div>
+                  {orders.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <label htmlFor="track-order-select" className="text-xs text-slate-500 whitespace-nowrap">
+                        Quick Select:
+                      </label>
+                      <select
+                        id="track-order-select"
+                        value={selectedTrackOrderId}
+                        onChange={(e) => {
+                          setSelectedTrackOrderId(e.target.value);
+                          setTrackOrderInput(e.target.value);
+                          setTrackLookupError('');
+                        }}
+                        className="px-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-white font-mono"
+                      >
+                        {orders.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.id.slice(0, 14)} · {o.serviceName} ({o.status})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                <form onSubmit={handleTrackOrderLookup} className="flex flex-col sm:flex-row gap-3">
+                  <div className="relative flex-1">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={trackOrderInput}
+                      onChange={(e) => {
+                        setTrackOrderInput(e.target.value);
+                        if (trackLookupError) setTrackLookupError('');
+                      }}
+                      placeholder="Enter Order ID (e.g. ord_...) or Activation Ref (e.g. BW-...)"
+                      className="w-full pl-10 pr-4 py-2.5 text-sm font-mono bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors whitespace-nowrap cursor-pointer"
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    <span>Track Order</span>
+                  </button>
+                </form>
+
+                {trackLookupError && (
+                  <div className="px-4 py-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/60 text-xs text-rose-700 dark:text-rose-300">
+                    {trackLookupError}
+                  </div>
+                )}
+              </div>
+
+              {orders.length === 0 ? (
+                <div className="p-10 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-center space-y-3">
+                  <Truck className="w-9 h-9 text-slate-400 mx-auto" />
+                  <h3 className="font-display text-base font-semibold text-slate-900 dark:text-white">
+                    No Orders to Track Yet
+                  </h3>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto">
+                    Once you purchase a verified account package, your order ID and live provisioning timeline will appear here automatically.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={onBrowseServices}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg cursor-pointer"
+                  >
+                    Browse Accounts &amp; Pricing
+                  </button>
+                </div>
+              ) : trackedOrder ? (
+                (() => {
+                  const ord = trackedOrder;
+                  const isCancelledOrRefunded =
+                    ord.status === 'Cancelled' || ord.status === 'Refunded';
+                  const createdLabel = new Date(ord.createdAt).toLocaleString();
+                  const updatedLabel = new Date(ord.updatedAt).toLocaleString();
+
+                  type StepState = 'completed' | 'current' | 'upcoming' | 'cancelled' | 'refunded';
+                  interface TimelineMilestone {
+                    id: string;
+                    title: string;
+                    description: string;
+                    timestamp: string;
+                    state: StepState;
+                    icon: React.ReactNode;
+                  }
+
+                  const milestones: TimelineMilestone[] = isCancelledOrRefunded
+                    ? [
+                        {
+                          id: 'placed',
+                          title: 'Order Placed & Wallet Authorized',
+                          description: `Order ${ord.id} created for ${ord.serviceName} (${ord.accountType || 'Personal'} Tier · ${ord.country}). $${ord.price.toFixed(2)} USD authorized from wallet.`,
+                          timestamp: createdLabel,
+                          state: 'completed',
+                          icon: <CheckCircle2 className="w-4 h-4" />,
+                        },
+                        {
+                          id: 'review',
+                          title: 'Order Verification & Fulfillment Queue',
+                          description: `Queued for ${ord.providerName} verification under Activation Ref ${ord.trackingCode}.`,
+                          timestamp: createdLabel,
+                          state: 'completed',
+                          icon: <ShieldCheck className="w-4 h-4" />,
+                        },
+                        ord.status === 'Refunded'
+                          ? {
+                              id: 'refunded',
+                              title: 'Order Refunded to Wallet',
+                              description: `Order fulfillment was halted and $${ord.price.toFixed(2)} USD has been credited back to your wallet balance.`,
+                              timestamp: updatedLabel,
+                              state: 'refunded',
+                              icon: <RefreshCw className="w-4 h-4" />,
+                            }
+                          : {
+                              id: 'cancelled',
+                              title: 'Order Cancelled',
+                              description: `Order was cancelled prior to activation completion. Contact support if you need assistance placing a replacement order.`,
+                              timestamp: updatedLabel,
+                              state: 'cancelled',
+                              icon: <XCircle className="w-4 h-4" />,
+                            },
+                      ]
+                    : [
+                        {
+                          id: 'placed',
+                          title: 'Order Placed & Payment Confirmed',
+                          description: `Order ${ord.id} confirmed for ${ord.serviceName} (${ord.accountType || 'Personal'} Tier) and $${ord.price.toFixed(2)} USD settled from wallet.`,
+                          timestamp: createdLabel,
+                          state: 'completed',
+                          icon: <CheckCircle2 className="w-4 h-4" />,
+                        },
+                        {
+                          id: 'pending',
+                          title: 'Compliance & Account Verification',
+                          description:
+                            ord.status === 'Pending'
+                              ? `Awaiting initial verification check for ${ord.country} onboarding.`
+                              : `Verification check cleared for ${ord.country} account provisioning.`,
+                          timestamp: ord.status === 'Pending' ? updatedLabel : createdLabel,
+                          state: ord.status === 'Pending' ? 'current' : 'completed',
+                          icon: <ShieldCheck className="w-4 h-4" />,
+                        },
+                        {
+                          id: 'processing',
+                          title: 'Carrier Onboarding & Account Provisioning',
+                          description:
+                            ord.status === 'Processing'
+                              ? `Actively configuring your verified ${ord.providerName} credentials (${ord.trackingCode}).`
+                              : ord.status === 'Completed'
+                                ? `${ord.providerName} account credentials provisioned under reference ${ord.trackingCode}.`
+                                : `Scheduled once verification review clears.`,
+                          timestamp: ord.status === 'Processing' ? updatedLabel : ord.status === 'Completed' ? updatedLabel : 'Pending',
+                          state:
+                            ord.status === 'Completed'
+                              ? 'completed'
+                              : ord.status === 'Processing'
+                                ? 'current'
+                                : 'upcoming',
+                          icon: <Truck className="w-4 h-4" />,
+                        },
+                        {
+                          id: 'completed',
+                          title: 'Delivered & Ready to Use',
+                          description:
+                            ord.status === 'Completed'
+                              ? `Verified ${ord.serviceName} account is active and ready. Invoice available for download.`
+                              : `Final activation notice and verified credentials will unlock upon completion.`,
+                          timestamp: ord.status === 'Completed' ? updatedLabel : 'Awaiting completion',
+                          state: ord.status === 'Completed' ? 'completed' : 'upcoming',
+                          icon: <Package className="w-4 h-4" />,
+                        },
+                      ];
+
+                  return (
+                    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+                      {/* Tracked Order Summary Header */}
+                      <div className="px-6 py-5 border-b border-slate-200 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-slate-50/70 dark:bg-slate-950/40">
+                        <div className="space-y-1.5">
+                          <div className="flex flex-wrap items-center gap-2.5">
+                            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                              Order ID
+                            </span>
+                            <code className="px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 font-mono text-xs text-slate-900 dark:text-white">
+                              {ord.id}
+                            </code>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                 void navigator.clipboard?.writeText(ord.id).catch(() => {});
+                                 setCopiedTrackId(true);
+                                 setTimeout(() => setCopiedTrackId(false), 1800);
+                              }}
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                            >
+                              {copiedTrackId ? (
+                                <>
+                                  <Check className="w-3 h-3" />
+                                  <span>Copied</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3" />
+                                  <span>Copy ID</span>
+                                </>
+                              )}
+                            </button>
+                            <StatusLabel status={ord.status} />
+                          </div>
+                          <h3 className="font-display text-lg font-bold text-slate-900 dark:text-white">
+                            {ord.serviceName} · {ord.accountType || 'Personal'} Tier ({ord.country})
+                          </h3>
+                          <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-slate-500">
+                            <span>
+                              Activation Ref:{' '}
+                              <span className="font-mono text-slate-700 dark:text-slate-300">
+                                {ord.trackingCode}
+                              </span>
+                            </span>
+                            <span>
+                              Amount:{' '}
+                              <span className="font-mono font-semibold text-slate-900 dark:text-white">
+                                ${ord.price.toFixed(2)} USD
+                              </span>
+                            </span>
+                            <span>Last Updated: {updatedLabel}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => downloadOrderInvoice(ord)}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Download Invoice</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTicketCategory('Order Support');
+                              setTicketSubject(`Order ${ord.id.slice(0, 14)} Tracking Inquiry`);
+                              setActiveTab('support');
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 hover:bg-blue-100 dark:hover:bg-blue-950/60 rounded-lg cursor-pointer"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>Order Support</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Vertical Timeline View */}
+                      <div className="p-6 sm:p-8">
+                        <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-6">
+                          Fulfillment Timeline
+                        </div>
+                        <ol className="relative">
+                          {milestones.map((step, idx) => {
+                            const isLast = idx === milestones.length - 1;
+                            const badgeClasses =
+                              step.state === 'completed'
+                                ? 'bg-emerald-600 text-white border-emerald-600'
+                                : step.state === 'current'
+                                  ? 'bg-blue-600 text-white border-blue-600 ring-4 ring-blue-100 dark:ring-blue-950/70'
+                                  : step.state === 'refunded'
+                                    ? 'bg-blue-600 text-white border-blue-600'
+                                    : step.state === 'cancelled'
+                                      ? 'bg-rose-600 text-white border-rose-600'
+                                      : 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border-slate-300 dark:border-slate-700';
+
+                            const lineClasses =
+                              step.state === 'completed'
+                                ? 'bg-emerald-500/70 dark:bg-emerald-600/60'
+                                : 'bg-slate-200 dark:bg-slate-800';
+
+                            const stateBadgeLabel =
+                              step.state === 'completed'
+                                ? 'Completed'
+                                : step.state === 'current'
+                                  ? 'In Progress'
+                                  : step.state === 'refunded'
+                                    ? 'Refunded'
+                                    : step.state === 'cancelled'
+                                      ? 'Cancelled'
+                                      : 'Pending';
+
+                            const stateBadgeColor =
+                              step.state === 'completed'
+                                ? 'text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900/60'
+                                : step.state === 'current'
+                                  ? 'text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-900/60'
+                                  : step.state === 'refunded'
+                                    ? 'text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-900/60'
+                                    : step.state === 'cancelled'
+                                      ? 'text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900/60'
+                                      : 'text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700';
+
+                            return (
+                              <li key={step.id} className={`relative flex gap-4 ${isLast ? '' : 'pb-8'}`}>
+                                {!isLast && (
+                                  <span
+                                    aria-hidden="true"
+                                    className={`absolute left-[15px] top-8 bottom-0 w-0.5 ${lineClasses}`}
+                                  />
+                                )}
+                                <div
+                                  className={`relative z-10 w-8 h-8 rounded-full border flex items-center justify-center shrink-0 ${badgeClasses}`}
+                                >
+                                  {step.icon}
+                                </div>
+                                <div className="flex-1 min-w-0 pt-0.5">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="flex flex-wrap items-center gap-2.5">
+                                      <h4
+                                        className={`font-display text-sm font-semibold ${
+                                          step.state === 'upcoming'
+                                            ? 'text-slate-500 dark:text-slate-400'
+                                            : 'text-slate-900 dark:text-white'
+                                        }`}
+                                      >
+                                        {step.title}
+                                      </h4>
+                                      <span
+                                        className={`px-2 py-0.5 text-[11px] font-medium rounded border ${stateBadgeColor}`}
+                                      >
+                                        {stateBadgeLabel}
+                                      </span>
+                                    </div>
+                                    <span className="text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                                      {step.timestamp}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1.5 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                                    {step.description}
+                                  </p>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ol>
+
+                        {(ord.recipientName || ord.destinationCity) && (
+                          <div className="mt-6 pt-5 border-t border-slate-200 dark:border-slate-800 flex flex-wrap gap-6 text-xs text-slate-600 dark:text-slate-400">
+                            {ord.recipientName && (
+                              <div>
+                                <span className="text-slate-500">Account Holder / Recipient:</span>{' '}
+                                <span className="font-medium text-slate-900 dark:text-white">
+                                  {ord.recipientName}
+                                </span>
+                              </div>
+                            )}
+                            {ord.destinationCity && (
+                              <div>
+                                <span className="text-slate-500">Region / Destination City:</span>{' '}
+                                <span className="font-medium text-slate-900 dark:text-white">
+                                  {ord.destinationCity}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : null}
             </div>
           )}
 
@@ -1676,13 +2236,24 @@ export function UserDashboard({
                 </div>
               </div>
 
-              {/* Knowledge Base */}
+              {/* Knowledge Base & Direct Email */}
               <div className="p-6 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-4">
-                <div className="flex items-center gap-2">
-                  <BookOpen className="w-4 h-4 text-blue-600" />
-                  <h3 className="font-display text-base font-semibold text-slate-900 dark:text-white">
-                    Knowledge Base
-                  </h3>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <BookOpen className="w-4 h-4 text-blue-600" />
+                    <h3 className="font-display text-base font-semibold text-slate-900 dark:text-white">
+                      Knowledge Base
+                    </h3>
+                  </div>
+                  <div className="text-xs text-slate-600 dark:text-slate-300">
+                    Direct Support Email:{' '}
+                    <a
+                      href="mailto:Bluewhalemarkethub@gmail.com"
+                      className="font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      Bluewhalemarkethub@gmail.com
+                    </a>
+                  </div>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {KNOWLEDGE_BASE_ARTICLES.map((art) => (
@@ -1953,6 +2524,31 @@ export function UserDashboard({
                       </option>
                     ))}
                   </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    Account Role &amp; Status
+                  </label>
+                  <div className="w-full px-3 py-2 text-sm bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-200 flex items-center justify-between">
+                    <span className="font-mono font-semibold text-xs">{getDisplayRole(user.role)}</span>
+                    <span className="text-xs text-emerald-700 dark:text-emerald-400 font-medium">
+                      {normalizeAccountStatus(user.status)}
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+                    Registration Date / Last Login Date
+                  </label>
+                  <div className="w-full px-3 py-2 text-xs font-mono bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-600 dark:text-slate-300 space-y-0.5">
+                    <div>Registered: {new Date(user.createdAt).toLocaleString()}</div>
+                    <div>
+                      Last Login:{' '}
+                      {user.lastLoginAt
+                        ? new Date(user.lastLoginAt).toLocaleString()
+                        : 'Active session'}
+                    </div>
+                  </div>
                 </div>
               </div>
               {profileMsg && <p className="text-xs text-emerald-700 dark:text-emerald-400">{profileMsg}</p>}

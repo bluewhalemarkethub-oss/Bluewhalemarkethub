@@ -46,6 +46,7 @@ import { downloadOrderInvoice, downloadTransactionReceipt } from '../lib/invoice
 import { mapFirestoreSupportMessage } from '../services/firestoreMarketplace';
 import { QrCodeCanvas } from './QrCodeCanvas';
 import { ReceiptPreviewModal } from './ReceiptPreviewModal';
+import { OrderVolumeChart } from './OrderVolumeChart';
 import {
   getDisplayRole,
   normalizeAccountStatus,
@@ -1242,19 +1243,22 @@ export function UserDashboard({
           )}
 
           {activeTab === 'orders' && (
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-              <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-                <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
-                  Verified Account Orders
-                </h2>
-                <button
-                  type="button"
-                  onClick={onBrowseServices}
-                  className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline"
-                >
-                  + Buy New Account
-                </button>
-              </div>
+            <div className="space-y-6">
+              <OrderVolumeChart orders={orders} />
+
+              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+                <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                  <h2 className="font-display text-base font-semibold text-slate-900 dark:text-white">
+                    Verified Account Orders
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={onBrowseServices}
+                    className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    + Buy New Account
+                  </button>
+                </div>
               {orders.length === 0 ? (
                 <div className="p-8 text-center space-y-3">
                   <Package className="w-8 h-8 text-slate-400 mx-auto" />
@@ -1323,6 +1327,7 @@ export function UserDashboard({
                   </table>
                 </div>
               )}
+              </div>
             </div>
           )}
 

@@ -48,6 +48,10 @@ export default defineConfig(() => {
                 name: 'ui-vendor',
                 test: /node_modules[\\/](react|react-dom|lucide-react|motion|qrcode)/,
               },
+              {
+                name: 'charts',
+                test: /node_modules[\\/](recharts|victory-vendor|d3-[^\\/]+)/,
+              },
             ],
           },
         },
